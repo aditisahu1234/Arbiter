@@ -1,23 +1,15 @@
-FROM python:3.11-slim
+FROM python:3.11-slim AS backend
 
 WORKDIR /app
 
-ENV PYTHONUNBUFFERED=1 \
-    PYTHONDONTWRITEBYTECODE=1 \
-    PIP_NO_CACHE_DIR=1 \
-    PIP_DISABLE_PIP_VERSION_CHECK=1
+COPY backend/pyproject.toml backend/
+COPY backend/.venv backend/.venv/
 
-RUN apt-get update && apt-get install -y --no-install-recommends \
-    build-essential \
-    libpq-dev \
-    curl \
-    && rm -rf /var/lib/apt/lists/*
+RUN pip install --no-cache-dir --upgrade pip && \
+    pip install --no-deps -e /app/backend
 
-COPY pyproject.toml .
-RUN pip install --upgrade pip && pip install .
-
-COPY app/ ./app/
-COPY main.py* .
+COPY backend/app ./app
+COPY scripts ./scripts
 
 EXPOSE 8000
 

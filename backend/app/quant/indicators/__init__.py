@@ -32,12 +32,19 @@ class ExponentialMovingAverage(Indicator):
 
 class TrueRange(Indicator):
     def compute(self, df: pd.DataFrame, **kwargs) -> pd.Series:
-        high, low, prev_close = df["high"], df["low"], df["adjusted_close"].shift(1)
-        return pd.concat([
-            high - low,
-            (high - prev_close).abs(),
-            (low - prev_close).abs(),
-        ], axis=0).groupby(level=0).max()
+        """TR_t = max(H_t - L_t, |H_t - C_{t-1}|, |L_t - C_{t-1}|).
+        First row TR is NaN (no previous close).
+        """
+        high = df["high"]
+        low = df["low"]
+        prev_close = df["adjusted_close"].shift(1)
+        tr1 = high - low
+        tr2 = (high - prev_close).abs()
+        tr3 = (low - prev_close).abs()
+        tr = pd.concat([tr1, tr2, tr3], axis=1).max(axis=1)
+        # First row has no prev_close, so TR is just H-L but conventionally NaN
+        tr.iloc[0] = np.nan
+        return tr
 
 
 class AverageTrueRange(Indicator):
@@ -48,11 +55,10 @@ class AverageTrueRange(Indicator):
     def compute(self, df: pd.DataFrame, **kwargs) -> pd.Series:
         tr = TrueRange().compute(df)
         if self.smoothing == "rma":
-            # Wilder's smoothing (RMA)
-            atr = pd.Series(index=tr.index, dtype=float)
-            atr.iloc[:self.window] = np.nan
-            atr.iloc[self.window] = tr.iloc[:self.window].mean()
-            for i in range(self.window + 1, len(tr)):
+            atr = pd.Series(index=tr.index, dtype=float, name="atr")
+            atr.iloc[: self.window - 1] = np.nan
+            atr.iloc[self.window - 1] = tr.iloc[: self.window].mean()
+            for i in range(self.window, len(tr)):
                 atr.iloc[i] = (atr.iloc[i - 1] * (self.window - 1) + tr.iloc[i]) / self.window
             return atr
         elif self.smoothing == "sma":

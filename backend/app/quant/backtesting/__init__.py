@@ -8,6 +8,7 @@ import pandas as pd
 
 from app.quant.indicators import SimpleMovingAverage, AverageTrueRange, ReturnsEngine
 from app.quant.strategies import StrategyConfig, SMACrossoverStrategy
+from app.quant.costs import get_default_cost_model
 
 
 @dataclass
@@ -22,149 +23,160 @@ class BacktestResult:
 
 
 class BacktestEngine:
-    """Deterministic backtest with next-bar-open execution, transaction costs, and full metrics."""
+    """Deterministic backtest with next-bar-open execution and transaction costs."""
 
     def __init__(self, config: StrategyConfig | None = None):
         self.config = config or StrategyConfig()
 
-    def run(
-        self,
-        df: pd.DataFrame,
-        symbol: str,
-    ) -> BacktestResult:
-        """Run backtest on OHLCV data. df must have: timestamp, open, high, low, close, volume."""
+    def run(self, df: pd.DataFrame, symbol: str) -> BacktestResult:
         cfg = self.config
         strategy = SMACrossoverStrategy(cfg)
         signals = strategy.generate_signals(df)
-        trades: List[Dict[str, Any]] = []
 
         cash = cfg.initial_capital
-        position = 0.0  # shares held
-        equity_gross = []
-        equity_net = []
-        prev_equity = cash
-        daily_returns = []
+        position_shares = 0.0
+        entry_price = 0.0
+        entry_time = ""
+        stop_loss = 0.0
+        trades: List[Dict[str, Any]] = []
+
+        eq_gross = []
+        eq_net = []
+        daily_rets = []
 
         for i in range(1, len(df)):
-            price_row = df.iloc[i]
-            ts = str(price_row["timestamp"])[:10]
-            open_price = float(price_row["open"])
-            close_price = float(price_row["close"])
-            low_price = float(price_row["low"])
+            row = df.iloc[i]
+            prev_row = df.iloc[i - 1]
+            ts = str(row["timestamp"])[:10]
+            open_px = float(row["open"])
+            close_px = float(row["close"])
+            low_px = float(row["low"])
 
-            signal = signals.iloc[i]["signal"]
-            atr = signals.iloc[i]["atr"]
-            prev_signal = signals.iloc[i - 1]["signal"]
-            entry_price = float(df.iloc[i]["open"]) if i + 1 < len(df) else close_price
+            sig = signals.iloc[i]
+            prev_sig = signals.iloc[i - 1]
+            atr = sig["atr"]
 
-            # Execute on bar i using signals from bar i-1 (next-bar-open)
-            if position == 0 and prev_signal == "BUY":
-                # Enter at open of bar i
-                cost_bps = cfg.cost_bps / 10000
-                position = cash * (1 - cost_bps) / entry_price
+            gross_equity = cash + position_shares * close_px
+            eq_gross.append({"timestamp": ts, "equity": gross_equity})
+
+            # === BUY: next-bar-open execution ===
+            if position_shares == 0 and prev_sig["signal"] == "BUY":
+                one_way_bps = cfg.cost_bps / 2
+                one_way_frac = one_way_bps / 10000
+                position_shares = cash * (1 - one_way_frac) / open_px
                 cash = 0.0
-            elif position > 0 and prev_signal == "SELL":
-                # Exit at open of bar i
-                cost_bps = cfg.cost_bps / 10000
-                proceeds = position * entry_price * (1 - cost_bps)
-                pnl = proceeds - (position * (cash / (position * (1 - cost_bps)))) if position > 0 else 0
+                entry_price = open_px
+                entry_time = ts
+                stop_loss = open_px - cfg.atr_multiplier * atr if pd.notna(atr) else 0.0
+
+            # === SELL: next-bar-open execution (SMA cross down) ===
+            elif position_shares > 0 and prev_sig["signal"] == "SELL":
+                one_way_bps = cfg.cost_bps / 2
+                one_way_frac = one_way_bps / 10000
+                proceeds = position_shares * open_px * (1 - one_way_frac)
+                gross_proceeds = position_shares * open_px
+                pnl_pct = (proceeds / (gross_proceeds) - 1) * 100
                 trades.append({
-                    "entry_time": None,
-                    "entry_price": None,
+                    "entry_time": entry_time,
+                    "entry_price": round(entry_price, 2),
                     "exit_time": ts,
-                    "exit_price": entry_price,
+                    "exit_price": round(open_px, 2),
+                    "stop_loss": round(stop_loss, 2),
                     "exit_reason": "sma_cross_down",
-                    "pnl_pct": 0.0,
+                    "pnl_pct": round(pnl_pct, 4),
                 })
                 cash = proceeds
-                position = 0.0
+                position_shares = 0.0
+                entry_price = 0.0
+                entry_time = ""
+                stop_loss = 0.0
 
-            # Check stop-loss intraday
-            if position > 0:
-                stop_price = signals.iloc[i - 1].get("stop_loss", 0)
-                if pd.notna(stop_price) and low_price <= stop_price:
-                    cost_bps = cfg.cost_bps / 10000
-                    exit_px = min(entry_price, stop_price)
-                    proceeds = position * exit_px * (1 - cost_bps)
-                    pnl_pct = (proceeds / (position * entry_price * (1 + cost_bps)) - 1) * 100 if position > 0 else 0
-                    trades.append({
-                        "entry_time": str(df.iloc[i - 1]["timestamp"])[:10],
-                        "entry_price": entry_price,
-                        "exit_time": ts,
-                        "exit_price": exit_px,
-                        "exit_reason": "stop_loss",
-                        "pnl_pct": round(pnl_pct, 4),
-                    })
-                    cash = proceeds
-                    position = 0.0
+            # === STOP-LOSS: intraday check ===
+            if position_shares > 0 and pd.notna(stop_loss) and low_px <= stop_loss:
+                one_way_bps = cfg.cost_bps / 2
+                one_way_frac = one_way_bps / 10000
+                exit_px = min(open_px, stop_loss)
+                gross_exit = position_shares * exit_px
+                proceeds = gross_exit * (1 - one_way_frac)
+                gross_cost = position_shares * entry_price * one_way_frac
+                pnl_pct = ((proceeds / (position_shares * entry_price)) - 1) * 100
+                trades.append({
+                    "entry_time": entry_time,
+                    "entry_price": round(entry_price, 2),
+                    "exit_time": ts,
+                    "exit_price": round(exit_px, 2),
+                    "stop_loss": round(stop_loss, 2),
+                    "exit_reason": "stop_loss",
+                    "pnl_pct": round(pnl_pct, 4),
+                })
+                cash = proceeds
+                position_shares = 0.0
+                entry_price = 0.0
+                entry_time = ""
+                stop_loss = 0.0
 
-            equity = cash + position * close_price
-            gross_equity = cash + position * close_price
-            equity_gross.append({"timestamp": ts, "equity": gross_equity})
-            equity_net.append({"timestamp": ts, "equity": equity})
-            daily_ret = (close_price / df.iloc[i - 1]["close"] - 1) if df.iloc[i - 1]["close"] > 0 else 0
-            daily_returns.append(daily_ret)
+            # Daily return
+            prev_close = float(prev_row["close"])
+            daily_rets.append(close_px / prev_close - 1 if prev_close > 0 else 0.0)
 
-        # Close position at end
-        if position > 0:
-            last_close = float(df.iloc[-1]["close"])
-            cost_bps = cfg.cost_bps / 10000
-            proceeds = position * last_close * (1 - cost_bps)
+        # Force-close at end
+        if position_shares > 0:
+            last_row = df.iloc[-1]
+            last_close = float(last_row["close"])
+            last_ts = str(last_row["timestamp"])[:10]
+            one_way_bps = cfg.cost_bps / 2
+            one_way_frac = one_way_bps / 10000
+            proceeds = position_shares * last_close * (1 - one_way_frac)
+            pnl_pct = ((proceeds / (position_shares * entry_price)) - 1) * 100
             trades.append({
-                "entry_time": str(df.iloc[1]["timestamp"])[:10] if len(df) > 1 else None,
-                "entry_price": float(df.iloc[1]["open"]) if len(df) > 1 else None,
-                "exit_time": str(df.iloc[-1]["timestamp"])[:10],
-                "exit_price": last_close,
+                "entry_time": entry_time,
+                "entry_price": round(entry_price, 2),
+                "exit_time": last_ts,
+                "exit_price": round(last_close, 2),
+                "stop_loss": round(stop_loss, 2),
                 "exit_reason": "end_of_data",
-                "pnl_pct": round((proceeds / (position * float(df.iloc[1]["open"]) * (1 + cost_bps)) - 1) * 100, 4) if position > 0 else 0,
+                "pnl_pct": round(pnl_pct, 4),
             })
             cash = proceeds
-            position = 0.0
+            position_shares = 0.0
 
-        eq_gross = pd.DataFrame(equity_gross).set_index("timestamp")["equity"]
-        eq_net = pd.DataFrame(equity_net).set_index("timestamp")["equity"]
-        dr = pd.Series(daily_returns)
+        eq_gross_df = pd.DataFrame(eq_gross).set_index("timestamp")["equity"]
+        eq_net_df = eq_gross_df.copy()  # net = gross since we deduct from cash directly
+        dr = pd.Series(daily_rets)
 
-        metrics = self._compute_metrics(eq_gross, eq_net, trades, dr)
+        metrics = self._compute_metrics(eq_gross_df, eq_net_df, trades, dr)
         return BacktestResult(
             symbol=symbol, config=cfg,
             trades=trades,
-            equity_curve_gross=eq_gross, equity_curve_net=eq_net,
+            equity_curve_gross=eq_gross_df, equity_curve_net=eq_net_df,
             metrics=metrics, daily_returns=dr,
         )
 
-    def _compute_metrics(
-        self,
-        eq_gross: pd.Series,
-        eq_net: pd.Series,
-        trades: List[Dict],
-        daily_returns: pd.Series,
-    ) -> Dict[str, Any]:
+    def _compute_metrics(self, eq_gross, eq_net, trades, daily_returns):
         if eq_net.empty or eq_net.iloc[0] == 0:
             return {"error": "no_equity_data"}
 
-        cfg = self.config
         total_days = len(eq_net)
         gross_ret = (eq_gross.iloc[-1] / eq_gross.iloc[0]) - 1
-        net_eq_start = eq_net.iloc[0]
-        net_ret = (eq_net.iloc[-1] / net_eq_start) - 1
-        gross_cagr = ((eq_gross.iloc[-1] / eq_gross.iloc[0]) ** (252 / max(total_days, 1)) - 1) if eq_gross.iloc[0] > 0 else 0
-        net_cagr = ((eq_net.iloc[-1] / eq_net.iloc[0]) ** (252 / max(total_days, 1)) - 1) if eq_net.iloc[0] > 0 else 0
+        net_ret = (eq_net.iloc[-1] / eq_net.iloc[0]) - 1
+        gross_cagr = ((eq_gross.iloc[-1] / eq_gross.iloc[0]) ** (252 / max(total_days, 1)) - 1) if eq_gross.iloc[0] > 0 else 0.0
+        net_cagr = ((eq_net.iloc[-1] / eq_net.iloc[0]) ** (252 / max(total_days, 1)) - 1) if eq_net.iloc[0] > 0 else 0.0
         daily_vol = float(daily_returns.std() * np.sqrt(252)) if len(daily_returns) > 1 else 0.0
-        sharpe = (net_cagr - cfg.initial_capital * 0) / daily_vol if daily_vol > 0 else 0
+        sharpe = net_cagr / daily_vol if daily_vol > 0 else 0.0
 
-        # Max drawdown
         peak = eq_net.cummax()
         dd = (eq_net - peak) / peak
         max_dd = float(dd.min())
 
-        # Win rate, profit factor
         winning = [t for t in trades if t.get("pnl_pct", 0) > 0]
         losing = [t for t in trades if t.get("pnl_pct", 0) <= 0]
         gross_profit = sum(t.get("pnl_pct", 0) for t in winning)
         gross_loss = abs(sum(t.get("pnl_pct", 0) for t in losing))
         profit_factor = gross_profit / gross_loss if gross_loss > 0 else float("inf")
-        win_rate = len(winning) / len(trades) if trades else 0
+        win_rate = len(winning) / len(trades) if trades else 0.0
+
+        down_rets = daily_returns[daily_returns < 0]
+        sortino = (net_cagr / (down_rets.std() * np.sqrt(252))) if len(down_rets) > 0 and down_rets.std() > 0 else 0.0
 
         return {
             "gross_return": round(float(gross_ret) * 100, 2),
@@ -172,10 +184,7 @@ class BacktestEngine:
             "gross_cagr": round(float(gross_cagr) * 100, 2),
             "net_cagr": round(float(net_cagr) * 100, 2),
             "sharpe_ratio": round(float(sharpe), 4),
-            "sortino_ratio": round(
-                (float(net_cagr) / (float(daily_returns[daily_returns < 0].std() * np.sqrt(252)))
-                 if daily_returns[daily_returns < 0].std() > 0 else 0), 4
-            ),
+            "sortino_ratio": round(float(sortino), 4),
             "max_drawdown": round(float(max_dd) * 100, 2),
             "win_rate": round(float(win_rate) * 100, 2),
             "profit_factor": round(float(profit_factor), 4),

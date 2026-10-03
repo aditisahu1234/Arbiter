@@ -36,7 +36,7 @@ async def get_sma(
 async def get_atr(
     symbol: str = Query(..., description="Asset symbol"),
     window: int = Query(14, ge=2, le=100, description="ATR window"),
-    smoothing: str = Query("rma", regex="^(rma|sma|ema)$"),
+    smoothing: str = Query("rma", pattern="^(rma|sma|ema)$"),
     start_date: str | None = Query(None),
     end_date: str | None = Query(None),
 ) -> dict[str, Any]:
