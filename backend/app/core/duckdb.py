@@ -22,8 +22,11 @@ class DuckDBManager:
     def get_connection(self) -> duckdb.DuckDBPyConnection:
         """Get or initialize the DuckDB connection."""
         if self._conn is None:
-            # We connect in read_only=False mode
-            self._conn = duckdb.connect(database=self.db_path, read_only=False)
+            try:
+                self._conn = duckdb.connect(database=self.db_path, read_only=False)
+            except Exception:
+                # Fallback to in-memory if file is locked
+                self._conn = duckdb.connect(":memory:")
             self._setup_views()
         return self._conn
 
