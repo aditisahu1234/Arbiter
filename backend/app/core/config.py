@@ -31,15 +31,15 @@ class Settings(BaseSettings):
     )
     DATABASE_URL_SYNC: str = "postgresql://arbiter_user:arbiter_password@localhost:5432/arbiter_db"
     # Fallback to local SQLite when PostgreSQL is offline in standalone dev
-    FALLBACK_SQLITE_URL: str = "sqlite+aiosqlite:///data/arbiter_metadata.db"
-    FALLBACK_SQLITE_SYNC_URL: str = "sqlite:///data/arbiter_metadata.db"
+    FALLBACK_SQLITE_URL: str = f"sqlite+aiosqlite:///{DATA_DIR / 'arbiter_metadata.db'}"
+    FALLBACK_SQLITE_SYNC_URL: str = f"sqlite:///{DATA_DIR / 'arbiter_metadata.db'}"
 
     # Redis Cache
     REDIS_URL: str = "redis://localhost:6379/0"
     CACHE_DEFAULT_TTL_SECONDS: int = 3600
 
     # DuckDB OLAP
-    DUCKDB_PATH: str = "data/arbiter_analytics.duckdb"
+    DUCKDB_PATH: str = str(DATA_DIR / "arbiter_analytics.duckdb")
 
     # Market Data Provider
     MARKET_DATA_PROVIDER: str = "yahoo"

@@ -5,6 +5,7 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 
+from app.api.v1 import api_v1_router
 from app.core.config import settings
 from app.core.database import init_db
 from app.core.duckdb import duckdb_manager
@@ -50,7 +51,8 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
-# CORS Middleware
+# Include API v1 Router
+app.include_router(api_v1_router)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=settings.CORS_ORIGINS,
