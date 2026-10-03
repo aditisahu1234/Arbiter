@@ -20,14 +20,15 @@ logger = get_logger("batch_ingest")
 async def ingest_all_assets(years: int = 5, max_workers: int = 10) -> Dict[str, Any]:
     """Ingest 5-year OHLCV for all cataloged assets in batch with concurrency control."""
     await init_db()
-    assert ingestion_service.db_manager.session_maker is not None
-    async with ingestion_service.db_manager.session_maker() as db:
+    from app.core.database import db_manager
+    assert db_manager.session_maker is not None
+    async with db_manager.session_maker() as db:
         result = await db.execute(select(Asset).where(Asset.active == True))
         assets = result.scalars().all()
 
     logger.info("Starting batch ingestion", total_assets=len(assets), years=years)
 
-    import aiohttp
+    import pandas as pd
     from app.data.providers.factory import get_market_data_provider
     from app.core.duckdb import duckdb_manager
     from app.data.storage import storage_manager
@@ -42,10 +43,29 @@ async def ingest_all_assets(years: int = 5, max_workers: int = 10) -> Dict[str, 
     async def ingest_one(asset: Asset) -> Dict[str, Any]:
         async with sem:
             try:
+                # Check existing data and compute missing period
+                existing_df = storage_manager.load_normalized_ohlcv(asset.symbol)
+                local_start = start_date
+                local_end = end_date
+                if not existing_df.empty:
+                    last_date = pd.Timestamp(existing_df["timestamp"].max()).date()
+                    today = datetime.now(timezone.utc).date()
+                    if last_date >= today:
+                        # Already up to date
+                        return {
+                            "symbol": asset.symbol,
+                            "status": "up_to_date",
+                            "rows": len(existing_df),
+                            "first_date": str(existing_df["timestamp"].min())[:10],
+                            "last_date": str(existing_df["timestamp"].max())[:10],
+                        }
+                    # Incremental: fetch from last_date + 1
+                    local_start = max(local_start, datetime.combine(last_date, datetime.min.time()).replace(tzinfo=timezone.utc))
+                
                 raw_df = provider.get_historical_ohlcv(
                     provider_symbol=asset.provider_symbol,
-                    start_date=start_date,
-                    end_date=end_date,
+                    start_date=local_start,
+                    end_date=local_end,
                     interval="1d",
                 )
                 if raw_df.empty:
@@ -53,14 +73,22 @@ async def ingest_all_assets(years: int = 5, max_workers: int = 10) -> Dict[str, 
                 valid_df, invalid_df = ingestion_service.validate_ohlcv_dataframe(raw_df, asset.symbol)
                 if valid_df.empty:
                     return {"symbol": asset.symbol, "status": "all_invalid", "rows": 0}
-                storage_manager.save_normalized_ohlcv(valid_df, asset.symbol, asset.id, source="yahoo")
+                
+                # Use append to avoid duplicates
+                if not existing_df.empty:
+                    storage_manager.append_normalized_ohlcv(valid_df, asset.symbol, asset.id, source="yahoo")
+                else:
+                    storage_manager.save_normalized_ohlcv(valid_df, asset.symbol, asset.id, source="yahoo")
+                
+                # Reload to get full picture
+                final_df = storage_manager.load_normalized_ohlcv(asset.symbol)
                 return {
                     "symbol": asset.symbol,
                     "status": "success",
-                    "rows": len(valid_df),
+                    "rows": len(final_df),
                     "quarantined": len(invalid_df),
-                    "first_date": str(valid_df["timestamp"].min())[:10],
-                    "last_date": str(valid_df["timestamp"].max())[:10],
+                    "first_date": str(final_df["timestamp"].min())[:10],
+                    "last_date": str(final_df["timestamp"].max())[:10],
                 }
             except Exception as e:
                 return {"symbol": asset.symbol, "status": "error", "error": str(e)[:100]}
