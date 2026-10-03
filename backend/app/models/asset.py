@@ -28,7 +28,9 @@ class Asset(Base):
     isin: Mapped[str | None] = mapped_column(String(32), nullable=True, unique=True)
     provider_symbol: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
     active: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
         server_default=func.now(),
@@ -43,9 +45,7 @@ class Asset(Base):
         cascade="all, delete-orphan",
     )
 
-    __table_args__ = (
-        Index("ix_asset_symbol_exchange", "symbol", "exchange", unique=True),
-    )
+    __table_args__ = (Index("ix_asset_symbol_exchange", "symbol", "exchange", unique=True),)
 
     def __repr__(self) -> str:
         return f"<Asset(id={self.id}, symbol='{self.symbol}', exchange='{self.exchange}', provider_symbol='{self.provider_symbol}')>"

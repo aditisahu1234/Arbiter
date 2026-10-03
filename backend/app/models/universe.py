@@ -21,7 +21,9 @@ class Universe(Base):
     display_name: Mapped[str] = mapped_column(String(128), nullable=False)
     description: Mapped[str | None] = mapped_column(String(512), nullable=True)
     is_active: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
         server_default=func.now(),
@@ -45,17 +47,21 @@ class UniverseMember(Base):
     __tablename__ = "universe_members"
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
-    universe_id: Mapped[int] = mapped_column(Integer, ForeignKey("universes.id", ondelete="CASCADE"), nullable=False)
-    asset_id: Mapped[int] = mapped_column(Integer, ForeignKey("assets.id", ondelete="CASCADE"), nullable=False)
+    universe_id: Mapped[int] = mapped_column(
+        Integer, ForeignKey("universes.id", ondelete="CASCADE"), nullable=False
+    )
+    asset_id: Mapped[int] = mapped_column(
+        Integer, ForeignKey("assets.id", ondelete="CASCADE"), nullable=False
+    )
     weight: Mapped[float | None] = mapped_column(Float, nullable=True)
-    added_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    added_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
 
     universe: Mapped["Universe"] = relationship("Universe", back_populates="members")
     asset: Mapped["Asset"] = relationship("Asset", back_populates="universe_memberships")
 
-    __table_args__ = (
-        Index("ix_universe_member_unique", "universe_id", "asset_id", unique=True),
-    )
+    __table_args__ = (Index("ix_universe_member_unique", "universe_id", "asset_id", unique=True),)
 
     def __repr__(self) -> str:
         return f"<UniverseMember(universe_id={self.universe_id}, asset_id={self.asset_id})>"

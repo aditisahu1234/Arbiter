@@ -74,6 +74,9 @@ data/factors/*
 !data/factors/.gitkeep
 *.duckdb
 *.duckdb.wal
+*.db
+*.db-shm
+*.db-wal
 
 # Logs & Metrics
 logs/

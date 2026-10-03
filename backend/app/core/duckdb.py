@@ -96,7 +96,7 @@ class DuckDBManager:
 
             sql = f"""
                 SELECT * FROM read_parquet('{asset_parquet}')
-                WHERE {' AND '.join(conditions)}
+                WHERE {" AND ".join(conditions)}
                 ORDER BY timestamp ASC
             """
             return self.query_df(sql, params)
@@ -113,7 +113,7 @@ class DuckDBManager:
 
         sql = f"""
             SELECT * FROM ohlcv_all
-            WHERE {' AND '.join(conditions)}
+            WHERE {" AND ".join(conditions)}
             ORDER BY timestamp ASC
         """
         try:
@@ -132,7 +132,9 @@ class DuckDBManager:
                 return pd.to_datetime(df["max_ts"].iloc[0])
 
         try:
-            df = self.query_df("SELECT MAX(timestamp) as max_ts FROM ohlcv_all WHERE symbol = ?", [symbol])
+            df = self.query_df(
+                "SELECT MAX(timestamp) as max_ts FROM ohlcv_all WHERE symbol = ?", [symbol]
+            )
             if not df.empty and pd.notna(df["max_ts"].iloc[0]):
                 return pd.to_datetime(df["max_ts"].iloc[0])
         except Exception:

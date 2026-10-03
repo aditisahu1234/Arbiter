@@ -26,7 +26,9 @@ class Settings(BaseSettings):
     DATA_QUARANTINE_DIR: Path = DATA_DIR / "quarantine"
 
     # PostgreSQL OLTP
-    DATABASE_URL: str = "postgresql+asyncpg://arbiter_user:arbiter_password@localhost:5432/arbiter_db"
+    DATABASE_URL: str = (
+        "postgresql+asyncpg://arbiter_user:arbiter_password@localhost:5432/arbiter_db"
+    )
     DATABASE_URL_SYNC: str = "postgresql://arbiter_user:arbiter_password@localhost:5432/arbiter_db"
     # Fallback to local SQLite when PostgreSQL is offline in standalone dev
     FALLBACK_SQLITE_URL: str = "sqlite+aiosqlite:///data/arbiter_metadata.db"
