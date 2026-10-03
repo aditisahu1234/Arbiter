@@ -15,6 +15,7 @@ from app.core.duckdb import duckdb_manager
 from app.core.logging import get_logger, setup_logging
 from app.core.redis import cache_manager
 from app.jobs import setup_scheduler, start_scheduler
+from app.core.metrics import metrics
 
 setup_logging()
 logger = get_logger("main")
@@ -75,6 +76,7 @@ async def add_process_time_and_request_id(request: Request, call_next):
     process_time_ms = (time.perf_counter() - start_time) * 1000
     response.headers["X-Request-ID"] = request_id
     response.headers["X-Process-Time-Ms"] = f"{process_time_ms:.2f}"
+    metrics.record_request(request.method, request.url.path, response.status_code, process_time_ms / 1000)
     return response
 
 
@@ -86,3 +88,10 @@ async def health_check():
         "environment": settings.ENVIRONMENT,
         "version": "0.1.0",
     }
+
+
+@app.get("/metrics", tags=["Observability"])
+async def prometheus_metrics():
+    """Prometheus metrics endpoint."""
+    from prometheus_client import generate_latest
+    return Response(generate_latest(metrics.registry), media_type="text/plain")
