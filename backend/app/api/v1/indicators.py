@@ -3,6 +3,7 @@ from typing import Any
 from fastapi import APIRouter, Query
 import pandas as pd
 
+from app.core.cache import cache_response
 from app.data.storage import storage_manager
 from app.quant.indicators import SimpleMovingAverage, AverageTrueRange
 
@@ -10,6 +11,7 @@ router = APIRouter(prefix="/indicators", tags=["Indicators"])
 
 
 @router.get("/sma")
+@cache_response(ttl=600)  # Cache for 10 minutes
 async def get_sma(
     symbol: str = Query(..., description="Asset symbol"),
     window: int = Query(20, ge=2, le=200, description="SMA window"),
@@ -33,6 +35,7 @@ async def get_sma(
 
 
 @router.get("/atr")
+@cache_response(ttl=600)  # Cache for 10 minutes
 async def get_atr(
     symbol: str = Query(..., description="Asset symbol"),
     window: int = Query(14, ge=2, le=100, description="ATR window"),

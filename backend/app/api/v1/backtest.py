@@ -1,6 +1,6 @@
 """Backtest endpoints."""
 from typing import Any
-from fastapi import APIRouter, Query, HTTPException
+from fastapi import APIRouter, Query, HTTPException, Depends
 import pandas as pd
 
 from app.core.database import db_manager
@@ -9,12 +9,14 @@ from app.models.asset import Asset
 from app.quant.backtesting import BacktestEngine
 from app.quant.strategies import StrategyConfig
 from app.quant.costs import get_default_cost_model
+from app.core.security import get_current_user
 
 router = APIRouter(prefix="/strategies", tags=["Strategies"])
 
 
 @router.post("/backtest")
 async def run_backtest(
+    current_user: dict = Depends(get_current_user),
     symbol: str = Query(..., description="Asset symbol"),
     fast_sma: int = Query(10, ge=2, le=200),
     slow_sma: int = Query(50, ge=5, le=500),

@@ -5,6 +5,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.database import get_db
 from app.core.duckdb import duckdb_manager
+from app.core.cache import cache_response
 from app.data.storage import storage_manager
 from app.schemas.asset import AssetFilter
 from app.services.asset_service import asset_service
@@ -13,6 +14,7 @@ router = APIRouter(prefix="/assets", tags=["Assets"])
 
 
 @router.get("", response_model=dict[str, Any])
+@cache_response(ttl=300)  # Cache for 5 minutes
 async def list_assets(
     search: str | None = Query(None, description="Search symbol or company name"),
     sector: str | None = Query(None, description="Filter by sector"),

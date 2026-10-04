@@ -37,6 +37,7 @@ class Settings(BaseSettings):
     # Redis Cache
     REDIS_URL: str = "redis://localhost:6379/0"
     CACHE_DEFAULT_TTL_SECONDS: int = 3600
+    ENABLE_CACHE: bool = True
 
     # DuckDB OLAP
     DUCKDB_PATH: str = str(DATA_DIR / "arbiter_analytics.duckdb")
