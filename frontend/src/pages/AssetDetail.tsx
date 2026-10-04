@@ -1,10 +1,8 @@
-import { useParams } from 'react-router-dom'
 import { useEffect, useState } from 'react'
 import { fetchAssetOhlcv, fetchSMA, fetchATR } from '../services/api'
 import { OhlcBar } from '../types'
 
-export default function AssetDetail() {
-  const { symbol } = useParams<{ symbol: string }>()
+export default function AssetDetail({ symbol }: { symbol: string }) {
   const [ohlcv, setOhlcv] = useState<OhlcBar[]>([])
   const [sma, setSma] = useState<any>(null)
   const [atr, setAtr] = useState<any>(null)

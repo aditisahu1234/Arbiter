@@ -32,6 +32,7 @@ export interface LakehouseStatus {
   total_files: number
   total_bars_ingested: number
   total_size_mb: number
+  latest_date?: string | null
   assets: LakehouseFileStat[]
 }
 
