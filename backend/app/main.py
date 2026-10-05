@@ -9,6 +9,8 @@ from app.api.v1 import api_v1_router
 from app.api.v1.indicators import router as indicators_router
 from app.api.v1.backtest import router as backtest_router
 from app.api.v1.risk import router as risk_router
+from app.api.v1.positions import router as positions_router
+from app.api.v1.monitor import router as monitor_router
 from app.core.config import settings
 from app.core.database import init_db
 from app.core.duckdb import duckdb_manager
@@ -58,6 +60,8 @@ app.include_router(api_v1_router)
 app.include_router(indicators_router)
 app.include_router(backtest_router)
 app.include_router(risk_router)
+app.include_router(positions_router)
+app.include_router(monitor_router)
 
 app.add_middleware(
     CORSMiddleware,

@@ -12,6 +12,9 @@ export function CandlestickChart({ data, symbol }: CandlestickChartProps) {
   const chartRef = useRef<IChartApi | null>(null)
   const candleSeriesRef = useRef<ISeriesApi<'Candlestick'> | null>(null)
   const volumeSeriesRef = useRef<ISeriesApi<'Histogram'> | null>(null)
+  const smaFastRef = useRef<ISeriesApi<'Line'> | null>(null)
+  const smaSlowRef = useRef<ISeriesApi<'Line'> | null>(null)
+  const markersRef = useRef<any[]>([])
 
   useEffect(() => {
     if (!chartContainerRef.current) return
@@ -57,8 +60,25 @@ export function CandlestickChart({ data, symbol }: CandlestickChartProps) {
       priceFormat: {
         type: 'volume',
       },
-      priceScaleId: '', // overlay on main scale or separate
+      priceScaleId: '',
     })
+
+    // Add SMA lines
+    const smaFast = chart.addLineSeries({
+      color: '#f59e0b',
+      lineWidth: 2,
+      priceLineVisible: false,
+      lastValueVisible: false,
+    })
+    smaFastRef.current = smaFast
+
+    const smaSlow = chart.addLineSeries({
+      color: '#8b5cf6',
+      lineWidth: 2,
+      priceLineVisible: false,
+      lastValueVisible: false,
+    })
+    smaSlowRef.current = smaSlow
 
     chart.priceScale('').applyOptions({
       scaleMargins: {
@@ -90,7 +110,6 @@ export function CandlestickChart({ data, symbol }: CandlestickChartProps) {
   useEffect(() => {
     if (!candleSeriesRef.current || !volumeSeriesRef.current || data.length === 0) return
 
-    // Transform data for lightweight charts
     const candleData = data.map((d) => ({
       time: d.time,
       open: d.open,
@@ -118,7 +137,7 @@ export function CandlestickChart({ data, symbol }: CandlestickChartProps) {
       <div className="flex items-center justify-between px-4 py-2.5 bg-[#111622] border-b border-[#1e2638]">
         <div className="flex items-center space-x-3">
           <span className="font-mono font-bold text-sm text-blue-400">{symbol}</span>
-          <span className="text-xs text-slate-400">Daily OHLCV Candlestick Chart (5-Year Lakehouse)</span>
+          <span className="text-xs text-slate-400">Daily OHLCV Candlestick Chart</span>
         </div>
         <div className="text-xs font-mono text-slate-400">
           {data.length > 0 ? (

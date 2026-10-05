@@ -1,88 +1,77 @@
-# Arbiter (Quant Platform)
+# Arbiter - Quantitative Market Analysis Platform
 
-> **Institutional-Grade Quantitative Market Analysis & Strategy Research Platform**
+Complete quantitative trading platform with:
+- Market data ingestion from Yahoo Finance
+- Strategy backtesting with SMA Crossover + ATR Stop-loss
+- Risk analytics (CAPM, Fama-French 3-Factor)
+- Position tracking and monitoring
+- Real-time market status
 
-Arbiter is a modular, high-performance quantitative research terminal and computational engine built with Python, FastAPI, DuckDB, PostgreSQL, Redis, and React. It provides complete historical/incremental market data pipelines, mathematical indicator engines, deterministic backtesting simulation, factor risk models (CAPM, Fama-French), and a responsive financial trading terminal.
+## Features
 
----
+### Core Quant Engine
+- Next-bar-open execution (no look-ahead bias)
+- ATR-based stop-loss with gap handling
+- Transaction cost modeling
+- Full backtest metrics (Sharpe, Sortino, Max DD, Win Rate, Profit Factor)
 
-## Architecture Overview
+### Data Pipeline
+- 512 Indian equity assets in catalog
+- ~613K OHLCV bars (2021-2026)
+- Parquet lakehouse storage with DuckDB
+- Daily ingestion via APScheduler
 
-```
-Layer 4: User Experience (React + TypeScript + Vite + Tailwind CSS + Lightweight Charts)
-   │
-Layer 3: Platform / API (FastAPI, Redis Caching, Pydantic v2, Structured Logs)
-   │
-Layer 2: Quantitative Engine (Vectorized Indicators, Strategy, Backtester, CAPM, Fama-French)
-   │
-Layer 1: Data Platform (DuckDB OLAP + PostgreSQL Metadata + Parquet Lakehouse + yfinance Provider)
-```
+### Strategy Lab
+- Configure SMA crossover parameters
+- Run backtests with real historical data
+- View equity curves and trade logs
+- Track positions persistently
 
----
+### Risk Analytics
+- CAPM with RBI risk-free rate provider
+- Fama-French 3-Factor with IIM Ahmedabad or synthetic factors
+- Alpha, Beta, R² calculations
 
-## Tech Stack
+### Position Management
+- Persistent position storage in PostgreSQL/SQLite
+- Live price monitoring during market hours
+- Automatic exit condition evaluation
+- P&L tracking with transaction costs
 
-- **Backend**: Python 3.11+, FastAPI, Pydantic v2, Pandas, NumPy, SciPy, Statsmodels
-- **Storage**: PostgreSQL 16 (metadata/OLTP), DuckDB & Apache Parquet (market analytics/OLAP), Redis 7 (caching)
-- **Market Data**: Multi-provider architecture (Yahoo Finance provider initial)
-- **Frontend**: React, TypeScript, Vite, Tailwind CSS, TanStack Query, Zustand, TradingView Lightweight Charts
-- **Scheduler**: APScheduler with market close awareness (IST/NSE)
-- **Tooling**: Ruff, Pytest, Docker Compose, GitHub Actions
+## Quick Start
 
----
-
-## Quickstart
-
-### 1. Prerequisites
-- Docker & Docker Compose
-- Python 3.11+
-- Node.js 20+
-
-### 2. Local Infrastructure
 ```bash
-# Start PostgreSQL & Redis
-docker-compose up -d postgres redis
+# Install dependencies
+pip install -r requirements.txt
+cd frontend && npm install
+
+# Start backend
+uvicorn app.main:app --reload --port 8000
+
+# Start frontend
+cd frontend && npm run dev
+
+# Run tests
+cd backend && python -m pytest tests/unit -v
 ```
 
-### 3. Backend Setup
+## API Endpoints
+
+- `GET /api/v1/assets` - List assets
+- `GET /api/v1/assets/{symbol}/ohlcv` - Get OHLCV data
+- `POST /api/v1/strategies/backtest` - Run backtest
+- `GET /api/v1/risk/capm` - CAPM analysis
+- `GET /api/v1/risk/fama-french` - FF3 analysis
+- `POST /api/v1/positions` - Create position
+- `GET /api/v1/positions/open` - List open positions
+- `POST /api/v1/positions/strategy-calculations` - Run strategy calculations
+- `GET /api/v1/monitor/market-status` - Market status
+
+## Testing
+
 ```bash
 cd backend
-python3 -m venv .venv
-source .venv/bin/activate
-pip install -e .
-pytest
-uvicorn app.main:app --reload --port 8000
+python -m pytest tests/unit -v
 ```
 
-### 4. Frontend Setup
-```bash
-cd frontend
-npm install
-npm run dev
-```
-
----
-
-## Directory Structure
-
-```text
-Arbiter/
-├── backend/                  # FastAPI & Quant Compute Engine
-│   ├── app/
-│   │   ├── api/v1/          # REST endpoints
-│   │   ├── core/            # Database, settings, telemetry
-│   │   ├── data/            # Ingestion, validation, Parquet storage
-│   │   ├── quant/           # Indicators, backtest, risk models
-│   │   ├── models/          # SQLAlchemy ORM models
-│   │   ├── schemas/         # Pydantic validation schemas
-│   │   └── jobs/            # Scheduled ingestion tasks
-│   └── tests/               # Test suites
-├── frontend/                 # React quantitative terminal
-├── data/
-│   ├── raw/                 # Raw provider payloads
-│   ├── normalized/          # Parquet historical OHLCV lakehouse
-│   ├── factors/             # Fama-French and benchmark factor series
-│   └── quarantine/          # Rejected tick data
-├── infrastructure/           # Docker Compose, DB migrations, Monitoring
-└── docs/                     # Technical specifications & methodologies
-```
+All 80 tests passing with 0 skipped.

@@ -44,6 +44,9 @@ class Asset(Base):
         back_populates="asset",
         cascade="all, delete-orphan",
     )
+    positions: Mapped[list["Position"]] = relationship(
+        "Position", back_populates="asset", cascade="all, delete-orphan"
+    )
 
     __table_args__ = (Index("ix_asset_symbol_exchange", "symbol", "exchange", unique=True),)
 
