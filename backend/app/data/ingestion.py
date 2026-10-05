@@ -7,6 +7,7 @@ from app.core.config import settings
 from app.core.database import db_manager
 from app.core.duckdb import duckdb_manager
 from app.core.logging import get_logger
+from app.core.cache import invalidate_cache
 from app.data.providers.factory import get_market_data_provider
 from app.data.storage import storage_manager
 from app.models.asset import Asset
@@ -133,6 +134,9 @@ class DataIngestionService:
             asset_id=asset_id,
             source=self.provider.name,
         )
+
+        # Invalidate cache for this asset
+        await invalidate_cache(pattern=symbol)
 
         first_ts = valid_df["timestamp"].min()
         last_ts = valid_df["timestamp"].max()

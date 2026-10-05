@@ -23,21 +23,20 @@ async def get_capm(
 ) -> dict[str, Any]:
     # Get risk-free rate
     if risk_free_source == "rbi":
+        from app.data.providers.risk_free import RBITBillProvider
+        provider = RBITBillProvider()
         try:
-            from app.data.providers.risk_free import RBITBillProvider
-            provider = RBITBillProvider()
             rf_data = provider.get_rates(start_date, end_date)
             rf_daily = rf_data.rates.mean()
             rf_annual = rf_data.annualized
             rf_source = rf_data.source
-        except Exception:
-            # Fallback to constant
-            from app.data.providers.risk_free import ConstantFallbackProvider
-            provider = ConstantFallbackProvider(risk_free_annual)
-            rf_data = provider.get_rates()
-            rf_daily = rf_data.rates.mean()
-            rf_annual = rf_data.annualized
-            rf_source = rf_data.source
+            is_production = rf_source.is_production
+        except FileNotFoundError:
+            # Explicit error when RBI data unavailable
+            raise HTTPException(
+                status_code=404,
+                detail="RBI T-bill data unavailable. Please download from https://data-rbi.mospi.gov.in/ and place in data/factors/rbi_tbill_91d.csv"
+            )
     else:
         from app.data.providers.risk_free import ConstantFallbackProvider
         provider = ConstantFallbackProvider(risk_free_annual)
@@ -45,6 +44,7 @@ async def get_capm(
         rf_daily = rf_data.rates.mean()
         rf_annual = rf_data.annualized
         rf_source = rf_data.source
+        is_production = rf_source.is_production
 
     asset_df = storage_manager.load_normalized_ohlcv(symbol.upper(), start_date, end_date)
     market_df = storage_manager.load_normalized_ohlcv(market_symbol, start_date, end_date)
@@ -68,6 +68,7 @@ async def get_capm(
         "symbol": symbol.upper(),
         "market": market_symbol,
         "risk_free_source": rf_source.name,
+        "risk_free_source_production": is_production,
         "risk_free_annual_pct": rf_annual,
         "risk_free_daily": round(rf_daily, 6),
         "observations": result.observations,
@@ -90,23 +91,26 @@ async def get_fama_french(
 ) -> dict[str, Any]:
     """Fama-French 3-factor analysis with India-specific or synthetic factors."""
     # Get factors
-    provider = IndiaFF3ProviderFactory.get_default(storage_manager)
-    try:
-        if factor_source == "iim_ahmedabad":
+    if factor_source == "iim_ahmedabad":
+        from app.data.providers.ff3 import IIMAhmedabadFF3Provider
+        provider = IIMAhmedabadFF3Provider()
+        try:
             ff3_data = provider.get_factors(start_date, end_date)
             factors_provenance = ff3_data.source
-        else:
-            # Use synthetic provider
-            from app.data.providers.ff3 import SyntheticFF3Provider
-            synth_provider = SyntheticFF3Provider(storage_manager)
-            ff3_data = synth_provider.get_factors(start_date, end_date)
-            factors_provenance = ff3_data.source
-    except Exception as e:
-        # Fallback to synthetic
+            is_production = factors_provenance.is_production
+        except FileNotFoundError:
+            # Explicit error when IIM data unavailable
+            raise HTTPException(
+                status_code=404,
+                detail="IIM Ahmedabad FF3 factors unavailable. Please download from https://www.iima.ac.in/en/faculty/agarwalla/data and place in data/factors/india_ff3_monthly.csv"
+            )
+    else:
+        # Synthetic provider
         from app.data.providers.ff3 import SyntheticFF3Provider
-        synth_provider = SyntheticFF3Provider(storage_manager)
-        ff3_data = synth_provider.get_factors(start_date, end_date)
+        provider = SyntheticFF3Provider(storage_manager)
+        ff3_data = provider.get_factors(start_date, end_date)
         factors_provenance = ff3_data.source
+        is_production = factors_provenance.is_production
 
     rf_daily = (1 + risk_free_annual / 100) ** (1 / 252) - 1
 
@@ -134,7 +138,7 @@ async def get_fama_french(
         "factor_source": factors_provenance.name,
         "factor_frequency": factors_provenance.frequency,
         "factor_provenance": factors_provenance.description,
-        "is_production_factor": factors_provenance.is_production,
+        "is_production_factor": is_production,
         "risk_free_source": "rbi" if factor_source == "iim_ahmedabad" else "fallback",
         "risk_free_annual_pct": risk_free_annual,
         "observations": result.observations,

@@ -41,19 +41,46 @@ def cache_response(ttl: int = None):
     return decorator
 
 
-def invalidate_cache(pattern: str):
-    """Decorator to invalidate cache entries matching pattern after mutation."""
+async def invalidate_cache(pattern: str = None):
+    """Invalidate cache entries matching pattern using Redis SCAN."""
+    from app.core.redis import cache_manager
+    if not settings.ENABLE_CACHE:
+        return
+    
+    client = await cache_manager.get_client()
+    if not client:
+        return
+    
+    try:
+        if pattern:
+            # Use SCAN to find matching keys (safe for production)
+            cursor = 0
+            while True:
+                cursor, keys = await client.scan(cursor, match=f"cache:{pattern}*", count=100)
+                if keys:
+                    await client.delete(*keys)
+                if cursor == 0:
+                    break
+        else:
+            # Clear all cache keys
+            cursor = 0
+            while True:
+                cursor, keys = await client.scan(cursor, match="cache:*", count=100)
+                if keys:
+                    await client.delete(*keys)
+                if cursor == 0:
+                    break
+    except Exception as e:
+        logger.warning("Cache invalidation failed", error=str(e))
+
+
+def invalidate_on_mutation(pattern: str = None):
+    """Decorator to invalidate cache after mutation."""
     def decorator(func: Callable) -> Callable:
         @wraps(func)
         async def wrapper(*args, **kwargs):
             result = await func(*args, **kwargs)
-            
-            # Invalidate matching cache entries
-            if settings.ENABLE_CACHE:
-                # Note: In production, would use Redis SCAN to find matching keys
-                # For now, we'll skip invalidation as it's complex without Redis client access
-                pass
-            
+            await invalidate_cache(pattern)
             return result
         return wrapper
     return decorator
