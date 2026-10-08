@@ -104,6 +104,7 @@ export default function App() {
   const [costBps, setCostBps] = useState(10)
   const [startDate, setStartDate] = useState('2021-10-01')
   const [endDate, setEndDate] = useState('2026-10-01')
+  const [strategyDate, setStrategyDate] = useState('')
   const [running, setRunning] = useState(false)
   const [strategyResult, setStrategyResult] = useState<StrategyResult | null>(null)
   const [error, setError] = useState<string | null>(null)
@@ -166,13 +167,6 @@ export default function App() {
     }
   }, [])
 
-  useEffect(() => {
-    if (selectedSymbol) {
-      loadOhlcv(selectedSymbol)
-      loadPositions(selectedSymbol)
-    }
-  }, [selectedSymbol, loadOhlcv])
-
   const loadPositions = useCallback(async (symbol: string) => {
     try {
       const [posRes, tradeRes, marketRes] = await Promise.all([
@@ -187,6 +181,17 @@ export default function App() {
       console.error('Failed to load positions:', err)
     }
   }, [])
+
+  useEffect(() => {
+    if (selectedSymbol) {
+      loadOhlcv(selectedSymbol)
+      loadPositions(selectedSymbol)
+      // Set default strategy date to latest available
+      if (ohlcvData.length > 0) {
+        setStrategyDate(ohlcvData[ohlcvData.length - 1].time)
+      }
+    }
+  }, [selectedSymbol, loadOhlcv, loadPositions])
 
   // Trigger dynamic ingestion
   const handleIngest = async (symbol: string) => {
@@ -239,6 +244,7 @@ export default function App() {
           cost_bps: costBps,
           start_date: startDate,
           end_date: endDate,
+          strategy_date: strategyDate,
         }),
       })
       if (!res.ok) {
@@ -272,7 +278,6 @@ export default function App() {
         }),
       })
       if (!res.ok) throw new Error('Failed to add position')
-      // Refresh positions
       await loadPositions(selectedSymbol)
     } catch (err: any) {
       alert('Failed to add position: ' + err.message)
@@ -327,10 +332,10 @@ export default function App() {
         </div>
       )}
 
-      {/* Main Terminal Workspace */}
-      <main className="flex-1 p-6 grid grid-cols-1 xl:grid-cols-12 gap-6 overflow-auto">
-        {/* Left Column: Asset Selection Table */}
-        <section className="xl:col-span-3 flex flex-col h-full">
+      {/* Main Content - Two Column Layout */}
+      <main className="flex-1 p-6 grid grid-cols-1 xl:grid-cols-12 gap-6">
+        {/* LEFT SIDEBAR: Asset Selection */}
+        <section className="xl:col-span-3 flex flex-col h-full min-h-[500px]">
           <AssetTable
             assets={assets}
             total={totalAssets}
@@ -343,91 +348,96 @@ export default function App() {
           />
         </section>
 
-        {/* Center Column: Chart & OHLCV */}
-        <section className="xl:col-span-5 flex flex-col space-y-6">
-          {/* Header with price info */}
-          <div className="flex justify-between items-start">
-            <div>
-              <h1 className="text-2xl font-semibold text-slate-100">{selectedSymbol}</h1>
-              <div className="flex items-center gap-4 mt-2">
-                {latestBar && (
-                  <>
-                    <span className="text-3xl font-bold text-slate-100">₹{latestBar.close.toFixed(2)}</span>
-                    <span className={`text-lg ${change >= 0 ? 'text-emerald-400' : 'text-rose-400'}`}>
-                      {change >= 0 ? '+' : ''}{change.toFixed(2)} ({pctChange >= 0 ? '+' : ''}{pctChange.toFixed(2)}%)
-                    </span>
-                  </>
+        {/* RIGHT MAIN: Chart + OHLCV + Strategy + Positions */}
+        <section className="xl:col-span-9 flex flex-col space-y-6 overflow-auto">
+          {/* Company Header & Chart */}
+          <div>
+            <div className="flex justify-between items-start mb-4">
+              <div>
+                <h1 className="text-2xl font-semibold text-slate-100">{selectedSymbol}</h1>
+                <div className="flex items-center gap-4 mt-2">
+                  {latestBar && (
+                    <>
+                      <span className="text-3xl font-bold text-slate-100">₹{latestBar.close.toFixed(2)}</span>
+                      <span className={`text-lg ${change >= 0 ? 'text-emerald-400' : 'text-rose-400'}`}>
+                        {change >= 0 ? '+' : ''}{change.toFixed(2)} ({pctChange >= 0 ? '+' : ''}{pctChange.toFixed(2)}%)
+                      </span>
+                    </>
+                  )}
+                </div>
+                {marketStatus && (
+                  <div className="text-xs text-slate-500 mt-1">
+                    {marketStatus.is_open ? '🟢 Market Open' : '🔴 Market Closed'} | {marketStatus.current_time_ist}
+                  </div>
                 )}
               </div>
-              {marketStatus && (
-                <div className="text-xs text-slate-500 mt-1">
-                  {marketStatus.is_open ? '🟢 Market Open' : '🔴 Market Closed'} | {marketStatus.current_time_ist}
-                </div>
-              )}
+              <div className="text-right text-sm text-slate-400">
+                <div>Bars: {ohlcvData.length}</div>
+                {ohlcvData.length > 0 && (
+                  <div className="text-xs">
+                    {ohlcvData[0].time} to {ohlcvData[ohlcvData.length - 1].time}
+                  </div>
+                )}
+              </div>
             </div>
-            <div className="text-right text-sm text-slate-400">
-              <div>Bars: {ohlcvData.length}</div>
-              {ohlcvData.length > 0 && (
-                <div className="text-xs">
-                  {ohlcvData[0].time} to {ohlcvData[ohlcvData.length - 1].time}
-                </div>
-              )}
-            </div>
+            <CandlestickChart data={ohlcvData} symbol={selectedSymbol} />
           </div>
 
-          <CandlestickChart data={ohlcvData} symbol={selectedSymbol} />
+          {/* OHLCV Data Table */}
           <OhlcvTable data={ohlcvData} />
-        </section>
 
-        {/* Right Column: Strategy Panel */}
-        <section className="xl:col-span-4 flex flex-col space-y-6">
-          {/* Strategy Configuration Panel */}
+          {/* Strategy Configuration & Results */}
           <div className="bg-slate-900/50 border border-slate-800 rounded-lg p-4">
             <h2 className="text-lg font-semibold text-slate-100 mb-4">Strategy Configuration</h2>
-            <div className="space-y-3">
-              <div className="grid grid-cols-2 gap-3">
-                <div>
-                  <label className="block text-slate-300 text-xs mb-1">Fast SMA</label>
-                  <input
-                    type="number"
-                    value={fastSma}
-                    onChange={(e) => setFastSma(Number(e.target.value))}
-                    className="w-full bg-slate-800 border border-slate-700 rounded px-2 py-1.5 text-slate-100 text-sm"
-                  />
-                </div>
-                <div>
-                  <label className="block text-slate-300 text-xs mb-1">Slow SMA</label>
-                  <input
-                    type="number"
-                    value={slowSma}
-                    onChange={(e) => setSlowSma(Number(e.target.value))}
-                    className="w-full bg-slate-800 border border-slate-700 rounded px-2 py-1.5 text-slate-100 text-sm"
-                  />
-                </div>
-              </div>
-              <div className="grid grid-cols-2 gap-3">
-                <div>
-                  <label className="block text-slate-300 text-xs mb-1">ATR Window</label>
-                  <input
-                    type="number"
-                    value={atrWindow}
-                    onChange={(e) => setAtrWindow(Number(e.target.value))}
-                    className="w-full bg-slate-800 border border-slate-700 rounded px-2 py-1.5 text-slate-100 text-sm"
-                  />
-                </div>
-                <div>
-                  <label className="block text-slate-300 text-xs mb-1">ATR Multiplier</label>
-                  <input
-                    type="number"
-                    step="0.1"
-                    value={atrMultiplier}
-                    onChange={(e) => setAtrMultiplier(Number(e.target.value))}
-                    className="w-full bg-slate-800 border border-slate-700 rounded px-2 py-1.5 text-slate-100 text-sm"
-                  />
-                </div>
+            <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-3 mb-4">
+              <div>
+                <label className="block text-slate-300 text-xs mb-1">Strategy Date</label>
+                <input
+                  type="date"
+                  value={strategyDate}
+                  onChange={(e) => setStrategyDate(e.target.value)}
+                  className="w-full bg-slate-800 border border-slate-700 rounded px-2 py-1.5 text-slate-100 text-sm"
+                />
               </div>
               <div>
-                <label className="block text-slate-300 text-xs mb-1">Transaction Cost (bps)</label>
+                <label className="block text-slate-300 text-xs mb-1">Fast SMA</label>
+                <input
+                  type="number"
+                  value={fastSma}
+                  onChange={(e) => setFastSma(Number(e.target.value))}
+                  className="w-full bg-slate-800 border border-slate-700 rounded px-2 py-1.5 text-slate-100 text-sm"
+                />
+              </div>
+              <div>
+                <label className="block text-slate-300 text-xs mb-1">Slow SMA</label>
+                <input
+                  type="number"
+                  value={slowSma}
+                  onChange={(e) => setSlowSma(Number(e.target.value))}
+                  className="w-full bg-slate-800 border border-slate-700 rounded px-2 py-1.5 text-slate-100 text-sm"
+                />
+              </div>
+              <div>
+                <label className="block text-slate-300 text-xs mb-1">ATR Window</label>
+                <input
+                  type="number"
+                  value={atrWindow}
+                  onChange={(e) => setAtrWindow(Number(e.target.value))}
+                  className="w-full bg-slate-800 border border-slate-700 rounded px-2 py-1.5 text-slate-100 text-sm"
+                />
+              </div>
+              <div>
+                <label className="block text-slate-300 text-xs mb-1">ATR Multiplier</label>
+                <input
+                  type="number"
+                  step="0.1"
+                  value={atrMultiplier}
+                  onChange={(e) => setAtrMultiplier(Number(e.target.value))}
+                  className="w-full bg-slate-800 border border-slate-700 rounded px-2 py-1.5 text-slate-100 text-sm"
+                />
+              </div>
+              <div>
+                <label className="block text-slate-300 text-xs mb-1">Cost (bps)</label>
                 <input
                   type="number"
                   value={costBps}
@@ -435,118 +445,155 @@ export default function App() {
                   className="w-full bg-slate-800 border border-slate-700 rounded px-2 py-1.5 text-slate-100 text-sm"
                 />
               </div>
-              <div className="grid grid-cols-2 gap-3">
-                <div>
-                  <label className="block text-slate-300 text-xs mb-1">Start Date</label>
-                  <input
-                    type="date"
-                    value={startDate}
-                    onChange={(e) => setStartDate(e.target.value)}
-                    className="w-full bg-slate-800 border border-slate-700 rounded px-2 py-1.5 text-slate-100 text-sm"
-                  />
-                </div>
-                <div>
-                  <label className="block text-slate-300 text-xs mb-1">End Date</label>
-                  <input
-                    type="date"
-                    value={endDate}
-                    onChange={(e) => setEndDate(e.target.value)}
-                    className="w-full bg-slate-800 border border-slate-700 rounded px-2 py-1.5 text-slate-100 text-sm"
-                  />
-                </div>
-              </div>
+            </div>
+            <div className="flex justify-end">
               <button
                 onClick={runStrategy}
                 disabled={running}
-                className="w-full bg-blue-600 hover:bg-blue-700 disabled:bg-slate-700 disabled:cursor-not-allowed text-white px-4 py-2 rounded-md font-medium transition-colors"
+                className="bg-blue-600 hover:bg-blue-700 disabled:bg-slate-700 disabled:cursor-not-allowed text-white px-6 py-2 rounded-md font-medium transition-colors"
               >
                 {running ? 'Calculating...' : 'RUN STRATEGY'}
               </button>
             </div>
-          </div>
 
-          {error && (
-            <div className="bg-rose-950/50 border border-rose-800 text-rose-200 px-4 py-3 rounded-lg text-sm">
-              {error}
-            </div>
-          )}
+            {error && (
+              <div className="bg-rose-950/50 border border-rose-800 text-rose-200 px-4 py-3 rounded-lg text-sm mb-4">
+                {error}
+              </div>
+            )}
 
-          {/* Strategy Results */}
-          {strategyResult && (
-            <div className="bg-slate-900/50 border border-slate-800 rounded-lg p-4">
-              <h2 className="text-lg font-semibold text-slate-100 mb-4">Strategy Results</h2>
-              
-              {/* Summary */}
-              <div className="grid grid-cols-3 gap-3 mb-4">
-                <div className="bg-slate-800/50 rounded p-2 text-center">
-                  <div className="text-slate-400 text-xs">Signals</div>
-                  <div className="text-xl font-bold text-slate-100">{strategyResult.signals.length}</div>
-                </div>
-                <div className="bg-slate-800/50 rounded p-2 text-center">
-                  <div className="text-slate-400 text-xs">Trades</div>
-                  <div className="text-xl font-bold text-slate-100">{strategyResult.trades.length}</div>
-                </div>
-                <div className="bg-slate-800/50 rounded p-2 text-center">
-                  <div className="text-slate-400 text-xs">Win Rate</div>
-                  <div className="text-xl font-bold text-emerald-400">
-                    {strategyResult.trades.length > 0
-                      ? ((strategyResult.trades.filter(t => t.net_pnl > 0).length / strategyResult.trades.length) * 100).toFixed(0)
-                      : 0}%
+            {/* Selected Date Result */}
+            {strategyResult?.selected_calculation && (
+              <div className="mt-4 bg-slate-800/50 border border-slate-700 rounded-lg p-4">
+                <h3 className="text-md font-semibold text-slate-100 mb-3">
+                  Strategy Decision for {strategyResult.selected_calculation.date}
+                </h3>
+                <div className="grid grid-cols-2 md:grid-cols-4 gap-3 text-sm">
+                  <div>
+                    <span className="text-slate-400">Close:</span>
+                    <span className="text-slate-200 ml-2">₹{strategyResult.selected_calculation.close.toFixed(2)}</span>
+                  </div>
+                  <div>
+                    <span className="text-slate-400">SMA Fast:</span>
+                    <span className="text-amber-400 ml-2">₹{strategyResult.selected_calculation.fast_sma?.toFixed(2) || '-'}</span>
+                  </div>
+                  <div>
+                    <span className="text-slate-400">SMA Slow:</span>
+                    <span className="text-purple-400 ml-2">₹{strategyResult.selected_calculation.slow_sma?.toFixed(2) || '-'}</span>
+                  </div>
+                  <div>
+                    <span className="text-slate-400">ATR:</span>
+                    <span className="text-slate-200 ml-2">₹{strategyResult.selected_calculation.atr?.toFixed(2) || '-'}</span>
+                  </div>
+                  <div>
+                    <span className="text-slate-400">Prev SMA Fast:</span>
+                    <span className="text-amber-400 ml-2">{strategyResult.selected_calculation.prev_fast_sma?.toFixed(2) || '-'}</span>
+                  </div>
+                  <div>
+                    <span className="text-slate-400">Prev SMA Slow:</span>
+                    <span className="text-purple-400 ml-2">{strategyResult.selected_calculation.prev_slow_sma?.toFixed(2) || '-'}</span>
+                  </div>
+                  <div>
+                    <span className="text-slate-400">Signal:</span>
+                    <span className={`ml-2 font-medium ${
+                      strategyResult.selected_calculation.signal === 'BUY' ? 'text-emerald-400' :
+                      strategyResult.selected_calculation.signal === 'SELL' ? 'text-rose-400' :
+                      'text-slate-400'
+                    }`}>
+                      {strategyResult.selected_calculation.signal}
+                    </span>
+                  </div>
+                  <div>
+                    <span className="text-slate-400">Position:</span>
+                    <span className="ml-2">
+                      {strategyResult.selected_calculation.position === 'OPEN' ? (
+                        <span className="text-blue-400">OPEN</span>
+                      ) : strategyResult.selected_calculation.position === 'CLOSED' ? (
+                        <span className="text-slate-400">CLOSED</span>
+                      ) : (
+                        <span className="text-slate-500">-</span>
+                      )}
+                    </span>
                   </div>
                 </div>
+                
+                {/* Entry/Exit Details */}
+                {strategyResult.selected_calculation.entry_price && (
+                  <div className="mt-3 pt-3 border-t border-slate-700">
+                    <div className="grid grid-cols-2 md:grid-cols-4 gap-3 text-sm">
+                      <div>
+                        <span className="text-slate-400">Entry Date:</span>
+                        <span className="text-slate-200 ml-2 font-mono">{strategyResult.selected_calculation.entry_date}</span>
+                      </div>
+                      <div>
+                        <span className="text-slate-400">Entry Price:</span>
+                        <span className="text-emerald-400 ml-2">₹{strategyResult.selected_calculation.entry_price.toFixed(2)}</span>
+                      </div>
+                      <div>
+                        <span className="text-slate-400">Stop Price:</span>
+                        <span className="text-rose-400 ml-2">₹{strategyResult.selected_calculation.stop_price?.toFixed(2) || '-'}</span>
+                      </div>
+                      <div>
+                        <span className="text-slate-400">Next Day:</span>
+                        <span className="text-slate-300 ml-2 font-mono">{strategyResult.calculations.find(c => c.date === strategyResult.selected_calculation.entry_date)?.date || '-'}</span>
+                      </div>
+                    </div>
+                  </div>
+                )}
+                
+                {/* Action Button for BUY signals */}
+                {strategyResult.selected_calculation.signal === 'BUY' && !strategyResult.selected_calculation.entry_date && (
+                  <div className="mt-3">
+                    <button
+                      onClick={() => {
+                        // Find the trade and add position
+                        const trade = strategyResult.trades.find(t => t.entry_date === strategyResult.selected_calculation?.entry_date)
+                        if (trade) addPosition(trade)
+                      }}
+                      className="bg-emerald-600 hover:bg-emerald-700 text-white px-4 py-2 rounded-md text-sm font-medium"
+                    >
+                      ADD POSITION
+                    </button>
+                  </div>
+                )}
               </div>
+            )}
 
-              {/* Trade List */}
-              <div className="overflow-x-auto max-h-64">
-                <table className="w-full text-xs">
-                  <thead className="sticky top-0 bg-slate-900">
-                    <tr className="text-slate-400 border-b border-slate-800">
-                      <th className="text-left px-2 py-1">#</th>
-                      <th className="text-left px-2 py-1">Entry</th>
-                      <th className="text-right px-2 py-1">Price</th>
-                      <th className="text-left px-2 py-1">Exit</th>
-                      <th className="text-right px-2 py-1">P&L</th>
-                      <th className="text-center px-2 py-1">Action</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {strategyResult.trades.map((trade, idx) => (
-                      <tr key={idx} className="border-b border-slate-800/30 hover:bg-slate-800/30">
-                        <td className="px-2 py-1 text-slate-500">{idx + 1}</td>
-                        <td className="px-2 py-1 text-slate-400 font-mono">{trade.entry_date}</td>
-                        <td className="px-2 py-1 text-right text-slate-300">₹{trade.entry_price.toFixed(0)}</td>
-                        <td className="px-2 py-1 text-slate-400 font-mono">{trade.exit_date}</td>
-                        <td className={`px-2 py-1 text-right font-medium ${trade.net_pnl >= 0 ? 'text-emerald-400' : 'text-rose-400'}`}>
-                          {trade.net_pnl >= 0 ? '+' : ''}{trade.net_pnl.toFixed(1)}%
-                        </td>
-                        <td className="px-2 py-1 text-center">
-                          <button
-                            onClick={() => { setSelectedTrade(trade); setShowDetails(true); }}
-                            className="text-blue-400 hover:text-blue-300"
-                          >
-                            Details
-                          </button>
-                        </td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
-
-              {/* Calculation Table */}
+            {/* Strategy Results */}
+            {strategyResult && (
               <div className="mt-4">
-                <h3 className="text-sm font-medium text-slate-300 mb-2">Calculations</h3>
-                <div className="overflow-x-auto max-h-96">
+                <div className="grid grid-cols-3 gap-3 mb-4">
+                  <div className="bg-slate-800/50 rounded p-3 text-center">
+                    <div className="text-slate-400 text-xs">Signals</div>
+                    <div className="text-xl font-bold text-slate-100">{strategyResult.signals.length}</div>
+                  </div>
+                  <div className="bg-slate-800/50 rounded p-3 text-center">
+                    <div className="text-slate-400 text-xs">Trades</div>
+                    <div className="text-xl font-bold text-slate-100">{strategyResult.trades.length}</div>
+                  </div>
+                  <div className="bg-slate-800/50 rounded p-3 text-center">
+                    <div className="text-slate-400 text-xs">Win Rate</div>
+                    <div className="text-xl font-bold text-emerald-400">
+                      {strategyResult.trades.length > 0
+                        ? ((strategyResult.trades.filter(t => t.net_pnl > 0).length / strategyResult.trades.length) * 100).toFixed(0)
+                        : 0}%
+                    </div>
+                  </div>
+                </div>
+
+                {/* Calculation Table */}
+                <div className="overflow-x-auto">
                   <table className="w-full text-xs">
-                    <thead className="sticky top-0 bg-slate-900">
+                    <thead>
                       <tr className="text-slate-400 border-b border-slate-800">
-                        <th className="text-left px-1 py-1">Date</th>
-                        <th className="text-right px-1 py-1">Close</th>
-                        <th className="text-right px-1 py-1">SMA F</th>
-                        <th className="text-right px-1 py-1">SMA S</th>
-                        <th className="text-right px-1 py-1">ATR</th>
-                        <th className="text-center px-1 py-1">Signal</th>
-                        <th className="text-center px-1 py-1">Pos</th>
+                        <th className="text-left px-2 py-1">Date</th>
+                        <th className="text-right px-2 py-1">Close</th>
+                        <th className="text-right px-2 py-1">SMA Fast</th>
+                        <th className="text-right px-2 py-1">SMA Slow</th>
+                        <th className="text-right px-2 py-1">ATR</th>
+                        <th className="text-center px-2 py-1">Signal</th>
+                        <th className="text-center px-2 py-1">Position</th>
+                        <th className="text-center px-2 py-1">Action</th>
                       </tr>
                     </thead>
                     <tbody>
@@ -555,31 +602,44 @@ export default function App() {
                           calc.signal === 'BUY' ? 'bg-emerald-950/20' :
                           calc.signal === 'SELL' ? 'bg-rose-950/20' : ''
                         }`}>
-                          <td className="px-1 py-0.5 text-slate-500 font-mono">{calc.date}</td>
-                          <td className="px-1 py-0.5 text-right text-slate-300">₹{calc.close.toFixed(0)}</td>
-                          <td className="px-1 py-0.5 text-right text-amber-400">{calc.fast_sma?.toFixed(0) || '-'}</td>
-                          <td className="px-1 py-0.5 text-right text-purple-400">{calc.slow_sma?.toFixed(0) || '-'}</td>
-                          <td className="px-1 py-0.5 text-right text-slate-400">{calc.atr?.toFixed(0) || '-'}</td>
-                          <td className="px-1 py-0.5 text-center">
+                          <td className="px-2 py-1 text-slate-500 font-mono">{calc.date}</td>
+                          <td className="px-2 py-1 text-right text-slate-300">₹{calc.close.toFixed(0)}</td>
+                          <td className="px-2 py-1 text-right text-amber-400">{calc.fast_sma?.toFixed(0) || '-'}</td>
+                          <td className="px-2 py-1 text-right text-purple-400">{calc.slow_sma?.toFixed(0) || '-'}</td>
+                          <td className="px-2 py-1 text-right text-slate-400">{calc.atr?.toFixed(0) || '-'}</td>
+                          <td className="px-2 py-1 text-center">
                             {calc.signal === 'BUY' && (
-                              <span className="bg-emerald-900/50 text-emerald-400 px-1 py-0.5 rounded text-xs">BUY</span>
+                              <span className="bg-emerald-900/50 text-emerald-400 px-2 py-0.5 rounded text-xs">BUY</span>
                             )}
                             {calc.signal === 'SELL' && (
-                              <span className="bg-rose-900/50 text-rose-400 px-1 py-0.5 rounded text-xs">SELL</span>
+                              <span className="bg-rose-900/50 text-rose-400 px-2 py-0.5 rounded text-xs">SELL</span>
                             )}
                             {calc.signal === 'HOLD' && (
                               <span className="text-slate-600">-</span>
                             )}
                           </td>
-                          <td className="px-1 py-0.5 text-center">
+                          <td className="px-2 py-1 text-center">
                             {calc.position === 'OPEN' && (
-                              <span className="bg-blue-900/50 text-blue-400 px-1 py-0.5 rounded text-xs">OPEN</span>
+                              <span className="bg-blue-900/50 text-blue-400 px-2 py-0.5 rounded text-xs">OPEN</span>
                             )}
                             {calc.position === 'CLOSED' && (
-                              <span className="bg-slate-700 text-slate-400 px-1 py-0.5 rounded text-xs">CLOSED</span>
+                              <span className="bg-slate-700 text-slate-400 px-2 py-0.5 rounded text-xs">CLOSED</span>
                             )}
                             {!calc.position && (
                               <span className="text-slate-600">-</span>
+                            )}
+                          </td>
+                          <td className="px-2 py-1 text-center">
+                            {calc.signal === 'BUY' && calc.entry_price && (
+                              <button
+                                onClick={() => {
+                                  const trade = strategyResult.trades.find(t => t.entry_price === calc.entry_price)
+                                  if (trade) addPosition(trade)
+                                }}
+                                className="bg-emerald-600 hover:bg-emerald-700 text-white px-2 py-0.5 rounded text-xs"
+                              >
+                                ADD
+                              </button>
                             )}
                           </td>
                         </tr>
@@ -588,90 +648,97 @@ export default function App() {
                   </table>
                 </div>
               </div>
-            </div>
-          )}
+            )}
+          </div>
 
-          {/* Active Positions */}
-          {positions.length > 0 && (
-            <div className="bg-slate-900/50 border border-slate-800 rounded-lg p-4">
-              <h2 className="text-lg font-semibold text-slate-100 mb-4">Active Positions</h2>
-              <div className="overflow-x-auto">
-                <table className="w-full text-xs">
-                  <thead>
-                    <tr className="text-slate-400 border-b border-slate-800">
-                      <th className="text-left px-2 py-1">Entry</th>
-                      <th className="text-right px-2 py-1">Buy Price</th>
-                      <th className="text-right px-2 py-1">Current</th>
-                      <th className="text-right px-2 py-1">Stop</th>
-                      <th className="text-right px-2 py-1">P&L</th>
-                      <th className="text-center px-2 py-1">Action</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {positions.map((pos) => {
-                      const unrealizedPnl = pos.current_price ? ((pos.current_price - pos.entry_price) / pos.entry_price) * 100 : 0
-                      return (
-                        <tr key={pos.id} className="border-b border-slate-800/50">
-                          <td className="px-2 py-1 text-slate-400 font-mono">{pos.entry_date}</td>
-                          <td className="px-2 py-1 text-right text-slate-300">₹{pos.entry_price.toFixed(0)}</td>
-                          <td className="px-2 py-1 text-right text-slate-300">₹{pos.current_price?.toFixed(0) || '-'}</td>
-                          <td className="px-2 py-1 text-right text-rose-400">₹{pos.stop_price?.toFixed(0) || '-'}</td>
-                          <td className={`px-2 py-1 text-right font-medium ${unrealizedPnl >= 0 ? 'text-emerald-400' : 'text-rose-400'}`}>
-                            {unrealizedPnl >= 0 ? '+' : ''}{unrealizedPnl.toFixed(1)}%
-                          </td>
-                          <td className="px-2 py-1 text-center">
-                            <button
-                              onClick={() => {
-                                if (latestBar) {
-                                  closePosition(pos.id, latestBar.close, 'manual')
-                                }
-                              }}
-                              className="bg-rose-600 hover:bg-rose-700 text-white px-2 py-0.5 rounded text-xs"
-                            >
-                              Close
-                            </button>
-                          </td>
-                        </tr>
-                      )
-                    })}
-                  </tbody>
-                </table>
-              </div>
-            </div>
-          )}
-
-          {/* Trade History */}
-          {trades.length > 0 && (
+          {/* Bottom: Strategy Results & Active Positions */}
+          <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+            {/* Left: Historical Strategy Table */}
             <div className="bg-slate-900/50 border border-slate-800 rounded-lg p-4">
               <h2 className="text-lg font-semibold text-slate-100 mb-4">Trade History</h2>
-              <div className="overflow-x-auto max-h-48">
-                <table className="w-full text-xs">
-                  <thead>
-                    <tr className="text-slate-400 border-b border-slate-800">
-                      <th className="text-left px-2 py-1">Entry</th>
-                      <th className="text-right px-2 py-1">Price</th>
-                      <th className="text-left px-2 py-1">Exit</th>
-                      <th className="text-right px-2 py-1">P&L</th>
-                      <th className="text-left px-2 py-1">Reason</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {trades.map((trade, idx) => (
-                      <tr key={idx} className="border-b border-slate-800/50 hover:bg-slate-800/30">
-                        <td className="px-2 py-1 text-slate-400 font-mono">{trade.entry_date}</td>
-                        <td className="px-2 py-1 text-right text-slate-300">₹{trade.entry_price.toFixed(0)}</td>
-                        <td className="px-2 py-1 text-slate-400 font-mono">{trade.exit_date}</td>
-                        <td className={`px-2 py-1 text-right font-medium ${trade.net_pnl >= 0 ? 'text-emerald-400' : 'text-rose-400'}`}>
-                          {trade.net_pnl >= 0 ? '+' : ''}{trade.net_pnl.toFixed(1)}%
-                        </td>
-                        <td className="px-2 py-1 text-slate-500">{trade.exit_reason}</td>
+              {trades.length > 0 ? (
+                <div className="overflow-x-auto max-h-64">
+                  <table className="w-full text-xs">
+                    <thead>
+                      <tr className="text-slate-400 border-b border-slate-800">
+                        <th className="text-left px-2 py-1">Entry</th>
+                        <th className="text-right px-2 py-1">Price</th>
+                        <th className="text-left px-2 py-1">Exit</th>
+                        <th className="text-right px-2 py-1">P&L</th>
+                        <th className="text-left px-2 py-1">Reason</th>
                       </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
+                    </thead>
+                    <tbody>
+                      {trades.map((trade, idx) => (
+                        <tr key={idx} className="border-b border-slate-800/50 hover:bg-slate-800/30">
+                          <td className="px-2 py-1 text-slate-400 font-mono">{trade.entry_date}</td>
+                          <td className="px-2 py-1 text-right text-slate-300">₹{trade.entry_price.toFixed(0)}</td>
+                          <td className="px-2 py-1 text-slate-400 font-mono">{trade.exit_date}</td>
+                          <td className={`px-2 py-1 text-right font-medium ${trade.net_pnl >= 0 ? 'text-emerald-400' : 'text-rose-400'}`}>
+                            {trade.net_pnl >= 0 ? '+' : ''}{trade.net_pnl.toFixed(1)}%
+                          </td>
+                          <td className="px-2 py-1 text-slate-500">{trade.exit_reason}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              ) : (
+                <div className="text-slate-500 text-sm py-4 text-center">No closed trades yet. Run a strategy to see results.</div>
+              )}
             </div>
-          )}
+
+            {/* Right: Active Positions */}
+            <div className="bg-slate-900/50 border border-slate-800 rounded-lg p-4">
+              <h2 className="text-lg font-semibold text-slate-100 mb-4">Active Positions</h2>
+              {positions.length > 0 ? (
+                <div className="overflow-x-auto">
+                  <table className="w-full text-xs">
+                    <thead>
+                      <tr className="text-slate-400 border-b border-slate-800">
+                        <th className="text-left px-2 py-1">Entry</th>
+                        <th className="text-right px-2 py-1">Buy Price</th>
+                        <th className="text-right px-2 py-1">Current</th>
+                        <th className="text-right px-2 py-1">Stop</th>
+                        <th className="text-right px-2 py-1">P&L</th>
+                        <th className="text-center px-2 py-1">Action</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {positions.map((pos) => {
+                        const unrealizedPnl = pos.current_price ? ((pos.current_price - pos.entry_price) / pos.entry_price) * 100 : 0
+                        return (
+                          <tr key={pos.id} className="border-b border-slate-800/50">
+                            <td className="px-2 py-1 text-slate-400 font-mono">{pos.entry_date}</td>
+                            <td className="px-2 py-1 text-right text-slate-300">₹{pos.entry_price.toFixed(0)}</td>
+                            <td className="px-2 py-1 text-right text-slate-300">₹{pos.current_price?.toFixed(0) || '-'}</td>
+                            <td className="px-2 py-1 text-right text-rose-400">₹{pos.stop_price?.toFixed(0) || '-'}</td>
+                            <td className={`px-2 py-1 text-right font-medium ${unrealizedPnl >= 0 ? 'text-emerald-400' : 'text-rose-400'}`}>
+                              {unrealizedPnl >= 0 ? '+' : ''}{unrealizedPnl.toFixed(1)}%
+                            </td>
+                            <td className="px-2 py-1 text-center">
+                              <button
+                                onClick={() => {
+                                  if (latestBar) {
+                                    closePosition(pos.id, latestBar.close, 'manual')
+                                  }
+                                }}
+                                className="bg-rose-600 hover:bg-rose-700 text-white px-2 py-0.5 rounded text-xs"
+                              >
+                                Close
+                              </button>
+                            </td>
+                          </tr>
+                        )
+                      })}
+                    </tbody>
+                  </table>
+                </div>
+              ) : (
+                <div className="text-slate-500 text-sm py-4 text-center">No active positions. Run a strategy and add a position to see it here.</div>
+              )}
+            </div>
+          </div>
         </section>
       </main>
 

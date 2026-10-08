@@ -76,6 +76,7 @@ class StrategyCalcRequest(BaseModel):
     cost_bps: float = Field(default=10.0, ge=0.0, le=100.0)
     start_date: Optional[str] = None
     end_date: Optional[str] = None
+    strategy_date: Optional[str] = None
 
 
 class DailyCalcResponse(BaseModel):
@@ -107,6 +108,8 @@ class StrategyCalcResponse(BaseModel):
     calculations: List[DailyCalcResponse]
     signals: List[dict]
     trades: List[dict]
+    selected_date: Optional[str] = None
+    selected_calculation: Optional[DailyCalcResponse] = None
 
 
 @router.post("", response_model=CreatePositionResponse)
@@ -342,6 +345,14 @@ async def compute_strategy_calculations(
     engine = StrategyCalcEngine(cfg)
     result = engine.compute(df, symbol)
 
+    # If strategy_date is provided, find that specific date's calculation
+    selected_calc = None
+    if req.strategy_date:
+        for calc in result.calculations:
+            if calc.date == req.strategy_date:
+                selected_calc = calc
+                break
+
     calculations = [
         DailyCalcResponse(
             date=c.date,
@@ -380,4 +391,6 @@ async def compute_strategy_calculations(
         calculations=calculations,
         signals=result.signals,
         trades=result.trades,
+        selected_date=result.strategy_date if req.strategy_date else None,
+        selected_calculation=selected_calc,
     )

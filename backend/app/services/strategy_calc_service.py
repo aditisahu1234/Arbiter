@@ -7,7 +7,7 @@ from typing import Any, Dict, List, Optional
 import numpy as np
 import pandas as pd
 
-from app.quant.indicators import SimpleMovingAverage, AverageTrueRange
+from app.quant.indicators import SimpleMovingAverage, AverageTrueRange, TrueRange
 from app.quant.strategies import StrategyConfig, SMACrossoverStrategy
 
 
@@ -45,6 +45,8 @@ class StrategyCalculationResult:
     calculations: List[DailyCalculation]
     signals: List[Dict[str, Any]]
     trades: List[Dict[str, Any]]
+    strategy_date: Optional[str] = None
+    selected_calculation: Optional[DailyCalculation] = None
 
 
 class StrategyCalcEngine:
@@ -53,11 +55,15 @@ class StrategyCalcEngine:
     def __init__(self, config: Optional[StrategyConfig] = None):
         self.config = config or StrategyConfig()
 
-    def compute_daily(self, df: pd.DataFrame) -> List[DailyCalculation]:
+    def compute_daily(self, df: pd.DataFrame, strategy_date: Optional[str] = None) -> List[DailyCalculation]:
         """Compute strategy signals for each bar with next-bar execution."""
         cfg = self.config
         strategy = SMACrossoverStrategy(cfg)
         signals_df = strategy.generate_signals(df)
+
+        # Add True Range column
+        tr = TrueRange().compute(df)
+        signals_df["true_range"] = tr
 
         calculations: List[DailyCalculation] = []
         position = None
@@ -75,6 +81,7 @@ class StrategyCalcEngine:
             slow_sma = float(sig["slow_sma"]) if pd.notna(sig["slow_sma"]) else None
             atr = float(sig["atr"]) if pd.notna(sig["atr"]) else None
             signal = str(sig["signal"]) if pd.notna(sig["signal"]) else "HOLD"
+            true_range = float(sig["true_range"]) if pd.notna(sig.get("true_range")) else None
 
             calc = DailyCalculation(
                 date=ts,
@@ -87,7 +94,7 @@ class StrategyCalcEngine:
                 slow_sma=slow_sma,
                 prev_fast_sma=None,
                 prev_slow_sma=None,
-                true_range=float(sig.get("atr", np.nan)) if pd.notna(sig.get("atr")) else None,
+                true_range=true_range,
                 atr=atr,
                 signal=signal,
                 stop_price=None,
@@ -161,10 +168,10 @@ class StrategyCalcEngine:
         return calculations
 
     def compute(
-        self, df: pd.DataFrame, symbol: str
+        self, df: pd.DataFrame, symbol: str, strategy_date: Optional[str] = None
     ) -> StrategyCalculationResult:
         """Run full strategy calculation and return result."""
-        calculations = self.compute_daily(df)
+        calculations = self.compute_daily(df, strategy_date)
 
         # Extract signals and trades
         signals: List[Dict[str, Any]] = []
@@ -200,10 +207,20 @@ class StrategyCalcEngine:
                     "net_pnl": round(net_pnl, 4),
                 })
 
+        # Find selected date calculation if provided
+        selected_calc = None
+        if strategy_date:
+            for calc in calculations:
+                if calc.date == strategy_date:
+                    selected_calc = calc
+                    break
+
         return StrategyCalculationResult(
             symbol=symbol.upper(),
             config=self.config,
             calculations=calculations,
             signals=signals,
             trades=trades,
+            strategy_date=strategy_date,
+            selected_calculation=selected_calc,
         )
