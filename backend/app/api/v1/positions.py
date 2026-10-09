@@ -5,7 +5,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.ext.asyncio import AsyncSession
 from pydantic import BaseModel, Field
 
-from app.core.database import get_db
+from app.core.database import get_db, db_manager
 from app.core.duckdb import duckdb_manager
 from app.data.storage import storage_manager
 from app.models.position import Position, PositionStatus
@@ -201,7 +201,7 @@ async def list_all_positions(
         positions = await position_service.get_open_positions(db, symbol)
     else:
         positions = await position_service.get_closed_positions(db, symbol)
-    
+
     return [
         PositionDetailResponse(
             id=p.id,
@@ -318,6 +318,124 @@ async def close_position(
     )
 
 
+@router.get("/{symbol}/data-status")
+async def get_asset_data_status(
+    symbol: str,
+):
+    """Get data freshness status for an asset."""
+    symbol = symbol.upper()
+    latest_ts = duckdb_manager.get_latest_timestamp(symbol)
+
+    if latest_ts is None:
+        return {
+            "symbol": symbol,
+            "has_data": False,
+            "latest_date": None,
+            "is_current": False,
+            "status": "no_data",
+            "message": "No data available. Run ingestion first.",
+        }
+
+    from datetime import datetime, timezone, timedelta
+
+    ist_tz = timezone(timedelta(hours=5, minutes=30))
+    now_ist = datetime.now(ist_tz)
+    today_ist = now_ist.date()
+
+    # NSE trading hours: 9:15 AM - 3:30 PM IST
+    market_close_ist = now_ist.replace(hour=15, minute=30, second=0, microsecond=0)
+    market_open_ist = now_ist.replace(hour=9, minute=15, second=0, microsecond=0)
+
+    # Check if market is currently open
+    is_market_open = market_open_ist <= now_ist <= market_close_ist
+
+    # Determine the last completed trading day
+    # If market is open, last completed day is yesterday (or earlier if weekend/holiday)
+    # If market is closed, last completed day is today (if weekday) or yesterday (if weekend)
+    if is_market_open:
+        # Market is open, so today's session is not complete
+        last_completed_date = today_ist - timedelta(days=1)
+    else:
+        # Market is closed, today could be the last trading day
+        # Check if today is a weekday
+        if today_ist.weekday() < 5:  # Monday=0, Friday=4
+            last_completed_date = today_ist
+        else:
+            # Weekend, last trading day was Friday
+            last_completed_date = today_ist - timedelta(days=(today_ist.weekday() - 4) % 7 + 1)
+
+    latest_date = latest_ts.date()
+
+    # Data is current if it includes the last completed trading day
+    is_current = latest_date >= last_completed_date
+
+    # Calculate how many trading days behind
+    days_behind = (today_ist - latest_date).days
+    # Convert to trading days (rough estimate: divide by 7 and multiply by 5)
+    trading_days_behind = int(days_behind * 5 / 7)
+
+    return {
+        "symbol": symbol,
+        "has_data": True,
+        "latest_date": latest_date.isoformat(),
+        "last_completed_trading_day": last_completed_date.isoformat(),
+        "is_current": is_current,
+        "days_behind": days_behind,
+        "trading_days_behind": trading_days_behind,
+        "market_status": "open" if is_market_open else "closed",
+        "needs_refresh": not is_current,
+    }
+
+
+@router.post("/{symbol}/refresh-data")
+async def refresh_asset_data(
+    symbol: str,
+):
+    """Refresh data for an asset by fetching latest from provider."""
+    from app.data.ingestion import ingestion_service
+    from app.models.asset import Asset
+    from sqlalchemy import select
+    from app.core.database import db_manager
+
+    symbol = symbol.upper()
+
+    # Initialize database if needed
+    if db_manager.session_maker is None:
+        db_manager.init_engine()
+
+    # Get asset from database
+    async with db_manager.session_maker() as db:
+        result = await db.execute(select(Asset).where(Asset.symbol == symbol))
+        asset = result.scalar_one_or_none()
+
+        if not asset:
+            raise HTTPException(status_code=404, detail=f"Asset {symbol} not found")
+
+        # Get latest stored date
+        latest_ts = duckdb_manager.get_latest_timestamp(symbol)
+        latest_date = latest_ts.date() if latest_ts else None
+
+        # Fetch from provider
+        ingest_result = await ingestion_service.ingest_asset_historical(
+            symbol=symbol,
+            asset_id=asset.id,
+            provider_symbol=asset.provider_symbol,
+            years=1,  # Only fetch last year for incremental update
+        )
+
+        # Get new latest date
+        new_latest_ts = duckdb_manager.get_latest_timestamp(symbol)
+        new_latest_date = new_latest_ts.date() if new_latest_ts else None
+
+        return {
+            "symbol": symbol,
+            "previous_latest_date": latest_date.isoformat() if latest_date else None,
+            "new_latest_date": new_latest_date.isoformat() if new_latest_date else None,
+            "rows_fetched": ingest_result.get("rows_ingested", 0),
+            "status": ingest_result.get("status", "unknown"),
+        }
+
+
 @router.post("/strategy-calculations", response_model=StrategyCalcResponse)
 async def compute_strategy_calculations(
     req: StrategyCalcRequest,
@@ -343,7 +461,7 @@ async def compute_strategy_calculations(
         cost_bps=req.cost_bps,
     )
     engine = StrategyCalcEngine(cfg)
-    result = engine.compute(df, symbol)
+    result = engine.compute(df, symbol, strategy_date=req.strategy_date)
 
     # If strategy_date is provided, find that specific date's calculation
     selected_calc = None
@@ -379,6 +497,32 @@ async def compute_strategy_calculations(
         for c in result.calculations
     ]
 
+    # Convert selected_calc to response format if it exists
+    selected_calc_response = None
+    if selected_calc:
+        selected_calc_response = DailyCalcResponse(
+            date=selected_calc.date,
+            open=selected_calc.open,
+            high=selected_calc.high,
+            low=selected_calc.low,
+            close=selected_calc.close,
+            adjusted_close=selected_calc.adjusted_close,
+            fast_sma=selected_calc.fast_sma,
+            slow_sma=selected_calc.slow_sma,
+            prev_fast_sma=selected_calc.prev_fast_sma,
+            prev_slow_sma=selected_calc.prev_slow_sma,
+            true_range=selected_calc.true_range,
+            atr=selected_calc.atr,
+            signal=selected_calc.signal,
+            stop_price=selected_calc.stop_price,
+            entry_date=selected_calc.entry_date,
+            entry_price=selected_calc.entry_price,
+            exit_date=selected_calc.exit_date,
+            exit_price=selected_calc.exit_price,
+            exit_reason=selected_calc.exit_reason,
+            position=selected_calc.position,
+        )
+
     return StrategyCalcResponse(
         symbol=result.symbol,
         config={
@@ -392,5 +536,5 @@ async def compute_strategy_calculations(
         signals=result.signals,
         trades=result.trades,
         selected_date=result.strategy_date if req.strategy_date else None,
-        selected_calculation=selected_calc,
+        selected_calculation=selected_calc_response,
     )
