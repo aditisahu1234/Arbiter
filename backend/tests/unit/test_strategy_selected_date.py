@@ -42,6 +42,108 @@ def no_crossover_data():
     })
 
 
+class TestTradeRecordCompleteness:
+    """Every completed trade must carry its entry_date and entry_price.
+
+    The historical backtest used to attach entry details only to the signal bar,
+    so the exit bar (where a trade record is built) had null entry fields. This
+    test locks in the fix: any trade that has an exit also has a real buy date
+    and buy price, and P&L is computed from the actual entry price.
+    """
+
+    @pytest.fixture
+    def vshape_trade_data(self):
+        """Flat-low, steady-rise, then-decline series that guarantees at least
+        one completed trade (buy on the bullish cross, exit on the bearish cross)."""
+        n = 200
+        p1 = np.full(70, 60.0)
+        p2 = np.linspace(60, 130, 70)
+        p3 = np.linspace(130, 50, 60)
+        prices = np.concatenate([p1, p2, p3])[:n]
+        dates = pd.date_range("2024-01-01", periods=n, freq="D")
+        return pd.DataFrame({
+            "timestamp": dates,
+            "open": prices,
+            "high": prices + 1.0,
+            "low": prices - 1.0,
+            "close": prices,
+            "adjusted_close": prices,
+            "volume": [1000000] * n,
+        })
+
+    def test_trades_carry_entry_fields(self, vshape_trade_data):
+        cfg = StrategyConfig(fast_sma=5, slow_sma=10, atr_window=3, atr_multiplier=2.0, cost_bps=10)
+        engine = StrategyCalcEngine(cfg)
+        result = engine.compute(vshape_trade_data, "TEST")
+
+        assert len(result.trades) > 0, "expected at least one completed trade"
+        for t in result.trades:
+            # Both buy fields must be populated for any trade that exited.
+            assert t["entry_date"] is not None, "entry_date missing on trade"
+            assert t["entry_price"] is not None, "entry_price missing on trade"
+            assert t["exit_date"] is not None
+            assert t["exit_price"] is not None
+            # Buy date must precede (or equal) the sell date.
+            assert t["entry_date"] <= t["exit_date"]
+            # P&L must be computed from the real entry price, not defaulted to 0.
+            expected_gross = ((t["exit_price"] - t["entry_price"]) / t["entry_price"]) * 100
+            assert abs(t["gross_pnl"] - round(expected_gross, 4)) < 1e-3
+            assert abs(t["net_pnl"] - (t["gross_pnl"] - 0.1)) < 1e-3
+
+    def test_trade_records_unique_and_in_order(self, vshape_trade_data):
+        """Each trade is represented exactly once and in chronological order."""
+        cfg = StrategyConfig(fast_sma=5, slow_sma=10, atr_window=3, atr_multiplier=2.0, cost_bps=10)
+        engine = StrategyCalcEngine(cfg)
+        result = engine.compute(vshape_trade_data, "TEST")
+
+        keys = [ (t["entry_date"], t["exit_date"]) for t in result.trades ]
+        assert len(keys) == len(set(keys)), "duplicate trade records detected"
+        entry_dates = [ t["entry_date"] for t in result.trades ]
+        assert entry_dates == sorted(entry_dates)
+
+    def test_trade_serialization_for_frontend(self, vshape_trade_data):
+        """Verify the trade dict serializes the buy fields exactly as the UI expects."""
+        cfg = StrategyConfig(fast_sma=5, slow_sma=10, atr_window=3, atr_multiplier=2.0, cost_bps=10)
+        engine = StrategyCalcEngine(cfg)
+        result = engine.compute(vshape_trade_data, "TEST")
+
+        t = result.trades[0]
+        for key in ("entry_date", "entry_price", "exit_date", "exit_price",
+                    "stop_price", "exit_reason", "gross_pnl", "cost", "net_pnl"):
+            assert key in t
+        assert isinstance(t["entry_date"], str)
+        assert isinstance(t["entry_price"], (int, float))
+
+    def test_next_session_recommendation_has_market_hours(self, vshape_trade_data):
+        """The forward-looking recommendation now carries market-hours context."""
+        cfg = StrategyConfig(fast_sma=5, slow_sma=10, atr_window=3, atr_multiplier=2.0, cost_bps=10)
+        engine = StrategyCalcEngine(cfg)
+        result = engine.compute(vshape_trade_data, "TEST")
+
+        rec = result.next_session_recommendation
+        assert rec is not None
+        assert "market_hours" in rec
+        mh = rec["market_hours"]
+        assert mh["timezone"] == "Asia/Kolkata"
+        assert "market_open" in mh and isinstance(mh["market_open"], bool)
+        # No invented opening price should ever be exposed on the recommendation.
+        assert "execution_price" not in rec or rec.get("execution_price") is None
+
+    def test_duplicate_entry_suppressed_when_open(self):
+        """If a position is open at the end of data, no duplicate buy is recommended."""
+        from app.services.strategy_calc_service import DailyCalculation
+        engine = StrategyCalcEngine(StrategyConfig())
+        open_calc = DailyCalculation(
+            "2026-10-19", 120, 122, 118, 120, 120,   # date, open, high, low, close, adj_close
+            None, None, None, None, None, None,       # fast_sma, slow_sma, prev_fast, prev_slow, true_range, atr
+            "HOLD", None,                              # signal, stop_price
+            None, None, None, None, None, "OPEN",     # entry_date, entry_price, exit_date, exit_price, exit_reason, position
+        )
+        rec = engine._build_next_session_recommendation([open_calc], "RELIANCE")
+        assert rec["has_signal"] is False
+        assert "duplicate" in rec.get("reason", "").lower()
+
+
 class TestSelectedDateStrategy:
     """Test strategy calculation for selected date."""
 

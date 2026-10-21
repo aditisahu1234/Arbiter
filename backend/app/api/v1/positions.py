@@ -110,6 +110,8 @@ class StrategyCalcResponse(BaseModel):
     trades: List[dict]
     selected_date: Optional[str] = None
     selected_calculation: Optional[DailyCalcResponse] = None
+    next_session_recommendation: Optional[dict] = None
+    data_status: Optional[dict] = None
 
 
 @router.post("", response_model=CreatePositionResponse)
@@ -318,12 +320,15 @@ async def close_position(
     )
 
 
-@router.get("/{symbol}/data-status")
-async def get_asset_data_status(
-    symbol: str,
-):
-    """Get data freshness status for an asset."""
-    symbol = symbol.upper()
+def _get_data_status(symbol: str, check_provider: bool = False) -> dict:
+    """Get data freshness status using NSE trading calendar and provider availability.
+
+    Market-close alone does not guarantee the provider has published today's
+    completed candle (Yahoo Finance lags). When check_provider=True we query the
+    provider's latest published session; the expected "current" session is the
+    LATER of the NSE calendar expectation and the provider's actual latest candle.
+    We never mark an asset as current merely because a request returned HTTP 200.
+    """
     latest_ts = duckdb_manager.get_latest_timestamp(symbol)
 
     if latest_ts is None:
@@ -342,49 +347,106 @@ async def get_asset_data_status(
     now_ist = datetime.now(ist_tz)
     today_ist = now_ist.date()
 
-    # NSE trading hours: 9:15 AM - 3:30 PM IST
+    # NSE trading hours: 09:15 – 15:30 IST
     market_close_ist = now_ist.replace(hour=15, minute=30, second=0, microsecond=0)
     market_open_ist = now_ist.replace(hour=9, minute=15, second=0, microsecond=0)
-
-    # Check if market is currently open
     is_market_open = market_open_ist <= now_ist <= market_close_ist
 
-    # Determine the last completed trading day
-    # If market is open, last completed day is yesterday (or earlier if weekend/holiday)
-    # If market is closed, last completed day is today (if weekday) or yesterday (if weekend)
+    # Trading-day predicate: use the `holidays` package if installed, else weekday-only.
+    try:
+        import holidays
+        nse_cal = holidays.India(years=[today_ist.year - 1, today_ist.year, today_ist.year + 1])
+        is_trading_day = lambda d: d.weekday() < 5 and d not in nse_cal
+    except ImportError:
+        is_trading_day = lambda d: d.weekday() < 5
+
+    # Determine the last expected completed NSE trading session from the calendar.
     if is_market_open:
-        # Market is open, so today's session is not complete
-        last_completed_date = today_ist - timedelta(days=1)
+        cursor = today_ist - timedelta(days=1)
+        while not is_trading_day(cursor):
+            cursor -= timedelta(days=1)
+        expected_last_session = cursor
     else:
-        # Market is closed, today could be the last trading day
-        # Check if today is a weekday
-        if today_ist.weekday() < 5:  # Monday=0, Friday=4
-            last_completed_date = today_ist
+        if is_trading_day(today_ist):
+            expected_last_session = today_ist
         else:
-            # Weekend, last trading day was Friday
-            last_completed_date = today_ist - timedelta(days=(today_ist.weekday() - 4) % 7 + 1)
+            cursor = today_ist - timedelta(days=1)
+            while not is_trading_day(cursor):
+                cursor -= timedelta(days=1)
+            expected_last_session = cursor
+
+    # Query the provider's actual latest published session if requested.
+    provider_latest_date = None
+    provider_available = True
+    if check_provider:
+        try:
+            from app.data.providers.factory import get_market_data_provider
+            import pandas as pd
+            provider = get_market_data_provider()
+            asset_symbol = symbol
+            # Use the asset's provider symbol if available
+            provider_latest_df = provider.get_latest_ohlcv(f"{asset_symbol}.NS" if not asset_symbol.endswith(".NS") else asset_symbol)
+            if provider_latest_df is not None and not provider_latest_df.empty:
+                provider_latest_date = pd.Timestamp(provider_latest_df["timestamp"].iloc[-1]).date()
+        except Exception:
+            provider_available = False
+
+    # The effective "current" session is the LATER of the calendar expectation and
+    # the provider's actual latest candle. This avoids marking data as stale when
+    # the provider simply hasn't published today's candle yet.
+    if provider_latest_date is not None:
+        effective_last_session = max(expected_last_session, provider_latest_date)
+        provider_lagging = expected_last_session > provider_latest_date
+    else:
+        effective_last_session = expected_last_session
+        provider_lagging = False
 
     latest_date = latest_ts.date()
+    # Data is "current" if it reaches the effective last session. If the provider
+    # is lagging (today's candle not yet published), we use the provider's latest
+    # as the bar for freshness, so the asset is current if it matches that.
+    is_current = latest_date >= effective_last_session
 
-    # Data is current if it includes the last completed trading day
-    is_current = latest_date >= last_completed_date
+    # Count trading days behind relative to the effective last session.
+    trading_days_behind = 0
+    if not is_current:
+        cursor = latest_date + timedelta(days=1)
+        while cursor <= effective_last_session:
+            if is_trading_day(cursor):
+                trading_days_behind += 1
+            cursor += timedelta(days=1)
 
-    # Calculate how many trading days behind
-    days_behind = (today_ist - latest_date).days
-    # Convert to trading days (rough estimate: divide by 7 and multiply by 5)
-    trading_days_behind = int(days_behind * 5 / 7)
-
-    return {
+    result = {
         "symbol": symbol,
         "has_data": True,
         "latest_date": latest_date.isoformat(),
-        "last_completed_trading_day": last_completed_date.isoformat(),
+        # Backward-compatible key
+        "last_completed_trading_day": expected_last_session.isoformat(),
+        "expected_last_session": expected_last_session.isoformat(),
+        "provider_latest_date": provider_latest_date.isoformat() if provider_latest_date else None,
+        "provider_available": provider_available,
+        "provider_lagging": provider_lagging,
         "is_current": is_current,
-        "days_behind": days_behind,
+        "days_behind": (today_ist - latest_date).days,
         "trading_days_behind": trading_days_behind,
         "market_status": "open" if is_market_open else "closed",
         "needs_refresh": not is_current,
+        "message": (
+            "Data is current" if is_current
+            else f"Data is {trading_days_behind} trading day(s) behind expected session {effective_last_session.isoformat()}"
+            + (f" (provider last published {provider_latest_date.isoformat()})" if provider_latest_date else "")
+        ),
     }
+    return result
+
+
+@router.get("/{symbol}/data-status")
+async def get_asset_data_status(
+    symbol: str,
+    check_provider: bool = Query(False, description="Query provider for latest published session"),
+):
+    """Get data freshness status for an asset using NSE trading calendar."""
+    return _get_data_status(symbol.upper(), check_provider=check_provider)
 
 
 @router.post("/{symbol}/refresh-data")
@@ -436,17 +498,48 @@ async def refresh_asset_data(
         }
 
 
+@router.get("/{symbol}/live-quote")
+async def get_asset_live_quote(symbol: str):
+    """Return a bounded live/delayed intraday quote for the asset.
+
+    This endpoint exposes the most recent verified price with its timestamp and
+    a data_state (live / delayed / unavailable). It does NOT modify completed
+    daily candles or historical backtests. If the provider has no usable
+    current-session value, data_state is "unavailable" and the caller should
+    fall back to the last completed daily candle.
+    """
+    from app.data.providers.factory import get_market_data_provider
+
+    symbol = symbol.upper()
+    provider = get_market_data_provider()
+
+    # Determine the provider symbol (append .NS for NSE equities if needed)
+    provider_symbol = symbol if symbol.endswith(".NS") else f"{symbol}.NS"
+
+    # Check if the asset has stored data first (so we can label the fallback)
+    latest_ts = duckdb_manager.get_latest_timestamp(symbol)
+    fallback_date = latest_ts.date().isoformat() if latest_ts else None
+
+    quote = provider.get_live_quote(provider_symbol)
+    quote["fallback_daily_date"] = fallback_date
+    return quote
+
+
 @router.post("/strategy-calculations", response_model=StrategyCalcResponse)
 async def compute_strategy_calculations(
     req: StrategyCalcRequest,
 ):
-    """Run strategy calculations for an asset."""
+    """Run strategy calculations for an asset.
+    
+    Loads the full stored dataset for the symbol (for indicator warm-up),
+    computes signals over the whole dataset, then filters calculations/signals/trades
+    to the requested start_date/end_date interval. This preserves valid indicator
+    values even when the user selects a short interval.
+    """
     symbol = req.symbol.upper()
-    df = storage_manager.load_normalized_ohlcv(
-        symbol=symbol,
-        start_date=req.start_date,
-        end_date=req.end_date,
-    )
+    # Load the full available dataset so SMA/ATR have proper warm-up history.
+    # The engine filters to the requested interval after computing indicators.
+    df = storage_manager.load_normalized_ohlcv(symbol=symbol)
     if df.empty:
         raise HTTPException(
             status_code=404,
@@ -461,7 +554,12 @@ async def compute_strategy_calculations(
         cost_bps=req.cost_bps,
     )
     engine = StrategyCalcEngine(cfg)
-    result = engine.compute(df, symbol, strategy_date=req.strategy_date)
+    result = engine.compute(
+        df, symbol,
+        strategy_date=req.strategy_date,
+        start_date=req.start_date,
+        end_date=req.end_date,
+    )
 
     # If strategy_date is provided, find that specific date's calculation
     selected_calc = None
@@ -523,6 +621,9 @@ async def compute_strategy_calculations(
             position=selected_calc.position,
         )
 
+    # Include current data freshness status
+    data_status = _get_data_status(symbol)
+
     return StrategyCalcResponse(
         symbol=result.symbol,
         config={
@@ -537,4 +638,6 @@ async def compute_strategy_calculations(
         trades=result.trades,
         selected_date=result.strategy_date if req.strategy_date else None,
         selected_calculation=selected_calc_response,
+        next_session_recommendation=result.next_session_recommendation,
+        data_status=data_status,
     )

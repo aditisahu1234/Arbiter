@@ -6,6 +6,9 @@ from typing import Any, Callable
 
 from app.core.redis import cache_manager
 from app.core.config import settings
+from app.core.logging import get_logger
+
+logger = get_logger("cache")
 
 
 def cache_response(ttl: int = None):

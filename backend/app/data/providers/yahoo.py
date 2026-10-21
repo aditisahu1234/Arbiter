@@ -1,6 +1,6 @@
 import json
 import time
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 from pathlib import Path
 from typing import Any, Dict, Optional
 import pandas as pd
@@ -189,3 +189,75 @@ class YahooFinanceProvider(MarketDataProvider):
         except Exception as e:
             logger.error("Failed to fetch latest OHLCV from Yahoo", symbol=provider_symbol, error=str(e))
             return pd.DataFrame()
+
+    def get_live_quote(self, provider_symbol: str) -> Dict[str, Any]:
+        """Fetch a bounded, clearly-labelled live/delayed intraday quote.
+
+        This does NOT modify or corrupt completed daily candles. It returns the
+        most recent verified price with its timestamp and a data_state that
+        indicates whether the value is live, delayed, or unavailable. When no
+        usable intraday value is exposed by the provider, data_state is
+        "unavailable" and the caller must fall back to the last completed
+        daily candle.
+        """
+        out: Dict[str, Any] = {
+            "symbol": provider_symbol.split(".")[0],
+            "provider_symbol": provider_symbol,
+            "price": None,
+            "price_timestamp": None,
+            "data_state": "unavailable",
+            "is_intraday": False,
+            "note": "No usable current-session price from provider.",
+        }
+        ticker = yf.Ticker(provider_symbol)
+        try:
+            fi = ticker.fast_info
+            price = None
+            try:
+                price = float(fi["last_price"])
+            except Exception:
+                try:
+                    price = float(fi["last_close"])
+                except Exception:
+                    price = None
+            ts = None
+            try:
+                raw_ts = fi.get("last_market_time") or fi.get("last_date")
+                if raw_ts is not None:
+                    ts = pd.to_datetime(raw_ts).to_pydatetime() if isinstance(raw_ts, str) else raw_ts
+            except Exception:
+                ts = None
+            if price is not None and ts is not None:
+                now_ist = datetime.now(timezone(timedelta(hours=5, minutes=30)))
+                ts_aware = ts if ts.tzinfo else ts.replace(tzinfo=timezone.utc)
+                age_min = (now_ist.astimezone(timezone.utc) - ts_aware).total_seconds() / 60.0
+                out.update(
+                    price=round(price, 4),
+                    price_timestamp=ts_aware.astimezone(timezone.utc).isoformat(),
+                    data_state="live" if age_min <= 15 else "delayed",
+                    is_intraday=age_min <= 15,
+                    note=(
+                        "Current intraday quote (live)." if age_min <= 15
+                        else "Last verified quote is delayed; treat as a reference, not a live market value."
+                    ),
+                )
+                return out
+        except Exception as e:
+            logger.warning("Yahoo fast_info unavailable", symbol=provider_symbol, error=str(e))
+
+        try:
+            df = ticker.history(period="1d", interval="5m", auto_adjust=False)
+            if df is not None and not df.empty:
+                last_ts = df.index[-1]
+                out.update(
+                    price=round(float(df.iloc[-1]["Close"]), 4),
+                    price_timestamp=last_ts.isoformat() if hasattr(last_ts, "isoformat") else str(last_ts),
+                    data_state="delayed",
+                    is_intraday=True,
+                    note="Most recent intraday bar (delayed reference); not a live market value.",
+                )
+                return out
+        except Exception as e:
+            logger.warning("Yahoo intraday history unavailable", symbol=provider_symbol, error=str(e))
+
+        return out

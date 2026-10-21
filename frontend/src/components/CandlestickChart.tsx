@@ -14,7 +14,6 @@ export function CandlestickChart({ data, symbol }: CandlestickChartProps) {
   const volumeSeriesRef = useRef<ISeriesApi<'Histogram'> | null>(null)
   const smaFastRef = useRef<ISeriesApi<'Line'> | null>(null)
   const smaSlowRef = useRef<ISeriesApi<'Line'> | null>(null)
-  const markersRef = useRef<any[]>([])
 
   useEffect(() => {
     if (!chartContainerRef.current) return

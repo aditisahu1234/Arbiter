@@ -47,6 +47,7 @@ class StrategyCalculationResult:
     trades: List[Dict[str, Any]]
     strategy_date: Optional[str] = None
     selected_calculation: Optional[DailyCalculation] = None
+    next_session_recommendation: Optional[Dict[str, Any]] = None
 
 
 class StrategyCalcEngine:
@@ -55,7 +56,7 @@ class StrategyCalcEngine:
     def __init__(self, config: Optional[StrategyConfig] = None):
         self.config = config or StrategyConfig()
 
-    def compute_daily(self, df: pd.DataFrame, strategy_date: Optional[str] = None) -> List[DailyCalculation]:
+    def compute_daily(self, df: pd.DataFrame) -> List[DailyCalculation]:
         """Compute strategy signals for each bar with next-bar execution."""
         cfg = self.config
         strategy = SMACrossoverStrategy(cfg)
@@ -133,7 +134,10 @@ class StrategyCalcEngine:
                     calc.position = "OPEN"
 
                 elif signal == "SELL" and position == "OPEN":
-                    # Next-bar exit (SMA cross down)
+                    # Next-bar exit (SMA cross down). Propagate entry details so the
+                    # exit bar carries a complete trade record.
+                    calc.entry_date = entry_date
+                    calc.entry_price = entry_price
                     calc.exit_date = next_ts
                     calc.exit_price = next_open
                     calc.exit_reason = "sma_cross_down"
@@ -143,8 +147,10 @@ class StrategyCalcEngine:
                     stop_loss = 0.0
 
                 elif position == "OPEN" and pd.notna(stop_loss) and next_low <= stop_loss:
-                    # Stop loss hit
+                    # Stop loss hit. Propagate entry details onto the exit bar.
                     exit_price = min(next_open, stop_loss)
+                    calc.entry_date = entry_date
+                    calc.entry_price = entry_price
                     calc.exit_date = next_ts
                     calc.exit_price = exit_price
                     calc.exit_reason = "stop_loss"
@@ -153,12 +159,14 @@ class StrategyCalcEngine:
                     entry_price = 0.0
                     stop_loss = 0.0
 
-        # Force-close at end of data
+        # Force-close at end of data. Propagate entry details onto the exit bar.
         if position == "OPEN":
             last_calc = calculations[-1]
             last_row = df.iloc[-1]
             last_close = float(last_row["close"])
             last_ts = str(last_row["timestamp"])[:10]
+            last_calc.entry_date = entry_date
+            last_calc.entry_price = entry_price
             last_calc.exit_date = last_ts
             last_calc.exit_price = last_close
             last_calc.exit_reason = "end_of_data"
@@ -168,16 +176,29 @@ class StrategyCalcEngine:
         return calculations
 
     def compute(
-        self, df: pd.DataFrame, symbol: str, strategy_date: Optional[str] = None
+        self, df: pd.DataFrame, symbol: str, strategy_date: Optional[str] = None,
+        start_date: Optional[str] = None, end_date: Optional[str] = None
     ) -> StrategyCalculationResult:
-        """Run full strategy calculation and return result."""
-        calculations = self.compute_daily(df, strategy_date)
+        """Run full strategy calculation and return result.
+        
+        If start_date/end_date are provided, calculations are filtered to that range
+        but indicators are computed over the full dataset first (warm-up).
+        """
+        # Compute signals over the full dataset for correct indicator warm-up
+        calculations = self.compute_daily(df)
+        
+        # Filter calculations to the requested date range if provided
+        filtered_calculations = calculations
+        if start_date:
+            filtered_calculations = [c for c in filtered_calculations if c.date >= start_date]
+        if end_date:
+            filtered_calculations = [c for c in filtered_calculations if c.date <= end_date]
 
-        # Extract signals and trades
+        # Extract signals and trades from the filtered range
         signals: List[Dict[str, Any]] = []
         trades: List[Dict[str, Any]] = []
 
-        for calc in calculations:
+        for calc in filtered_calculations:
             if calc.signal in ("BUY", "SELL"):
                 signals.append({
                     "date": calc.date,
@@ -210,17 +231,88 @@ class StrategyCalcEngine:
         # Find selected date calculation if provided
         selected_calc = None
         if strategy_date:
-            for calc in calculations:
+            for calc in filtered_calculations:
                 if calc.date == strategy_date:
                     selected_calc = calc
                     break
 
+        # Build next-session recommendation from the latest available completed candle
+        # in the FULL dataset (not the filtered range), so the forward-looking signal
+        # always reflects the newest data regardless of the selected display interval.
+        next_rec = self._build_next_session_recommendation(calculations, symbol)
+
+        # Attach market-hours context so the frontend can distinguish a live BUY NOW
+        # situation from a next-session PENDING situation. This does not mutate the
+        # completed daily candles or historical trades.
+        next_rec["market_hours"] = self._get_market_hours_context()
+
         return StrategyCalculationResult(
             symbol=symbol.upper(),
             config=self.config,
-            calculations=calculations,
+            calculations=filtered_calculations,
             signals=signals,
             trades=trades,
             strategy_date=strategy_date,
             selected_calculation=selected_calc,
+            next_session_recommendation=next_rec,
         )
+
+    def _build_next_session_recommendation(
+        self, calculations: List[DailyCalculation], symbol: str
+    ) -> Dict[str, Any]:
+        """Evaluate the latest completed candle for a new entry signal for the next session."""
+        if not calculations:
+            return {"has_signal": False, "reason": "No data available"}
+
+        latest = calculations[-1]
+        result: Dict[str, Any] = {
+            "symbol": symbol.upper(),
+            "has_signal": False,
+            "signal_date": latest.date,
+            "action": None,
+            "expected_execution_basis": "next session opening price",
+            "stop_loss": None,
+            "exit_note": "Exit will be determined by configured strategy exit signal or stop-loss",
+            "data_freshness": f"Latest data as of {latest.date}",
+        }
+
+        # Only recommend entry if there is no open position at the end of the data
+        if latest.position == "OPEN":
+            result["reason"] = "A position is already open, so the strategy does not recommend a duplicate entry"
+            return result
+
+        # A BUY signal on the last bar means the next session's open is the entry
+        if latest.signal == "BUY" and latest.entry_price is not None:
+            result["has_signal"] = True
+            result["action"] = "Buy next eligible trading session"
+            result["stop_loss"] = latest.stop_price
+            return result
+
+        # No valid entry signal
+        result["reason"] = "No new buy signal"
+        return result
+
+    def _get_market_hours_context(self) -> Dict[str, Any]:
+        """Return NSE market-hours context using Asia/Kolkata.
+
+        This is a lightweight, provider-agnostic helper so the frontend can decide
+        whether to render "BUY NOW" (market open) vs "NEXT SESSION PENDING"
+        (market closed). It does not fetch intraday prices or modify daily data.
+        """
+        from datetime import datetime, timezone, timedelta
+
+        ist = timezone(timedelta(hours=5, minutes=30))
+        now = datetime.now(ist)
+        open_ist = now.replace(hour=9, minute=15, second=0, microsecond=0)
+        close_ist = now.replace(hour=15, minute=30, second=0, microsecond=0)
+        is_open = open_ist <= now <= close_ist
+        weekday = now.weekday()  # 0=Mon..5=Fri
+        is_weekend = weekday >= 5
+        return {
+            "timezone": "Asia/Kolkata",
+            "current_time_ist": now.isoformat(),
+            "market_open": is_open and not is_weekend,
+            "is_weekend": is_weekend,
+            "session_open": "09:15 IST",
+            "session_close": "15:30 IST",
+        }

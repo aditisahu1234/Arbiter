@@ -81,3 +81,6 @@ data/factors/*
 # Logs & Metrics
 logs/
 *.log
+
+# Pytest temporary output
+backend/pytest-of-*/

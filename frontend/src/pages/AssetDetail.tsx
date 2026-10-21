@@ -1,21 +1,7 @@
 import { useEffect, useState } from 'react'
-import { fetchAssetOhlcv, fetchSMA, fetchATR, runBacktest, runCAPM, runFF3 } from '../services/api'
+import { fetchAssetOhlcv, fetchSMA, fetchATR } from '../services/api'
 import { OhlcBar } from '../types'
-
-interface Position {
-  id: number
-  symbol: string
-  status: string
-  signal_date: string
-  entry_date: string
-  entry_price: number
-  stop_price: number
-  current_price: number
-  gross_pnl: number
-  net_pnl: number
-  created_at: string
-  last_updated: string
-}
+import { CandlestickChart } from '../components/CandlestickChart'
 
 interface Trade {
   entry_date: string
@@ -74,8 +60,8 @@ interface MarketStatus {
 
 export default function AssetDetail({ symbol }: { symbol: string }) {
   const [ohlcv, setOhlcv] = useState<OhlcBar[]>([])
-  const [sma, setSma] = useState<any>(null)
-  const [atr, setAtr] = useState<any>(null)
+  const [_sma, setSma] = useState<any>(null)
+  const [_atr, setAtr] = useState<any>(null)
   const [loading, setLoading] = useState(true)
   
   // Strategy state
@@ -83,7 +69,7 @@ export default function AssetDetail({ symbol }: { symbol: string }) {
   const [slowSma, setSlowSma] = useState(50)
   const [atrWindow, setAtrWindow] = useState(14)
   const [atrMultiplier, setAtrMultiplier] = useState(2.0)
-  const [costBps, setCostBps] = useState(10)
+  const [costBps, _setCostBps] = useState(10)
   const [startDate, setStartDate] = useState('2021-10-01')
   const [endDate, setEndDate] = useState('2026-10-01')
   const [running, setRunning] = useState(false)
@@ -162,32 +148,6 @@ export default function AssetDetail({ symbol }: { symbol: string }) {
       setError(err.message || 'Failed to run strategy')
     } finally {
       setRunning(false)
-    }
-  }
-
-  const addPosition = async (trade: any) => {
-    try {
-      const res = await fetch('/api/v1/positions', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          symbol,
-          signal_date: trade.entry_date,
-          entry_date: trade.entry_date,
-          entry_price: trade.entry_price,
-          fast_sma,
-          slow_sma,
-          atr_window: atrWindow,
-          atr_multiplier: atrMultiplier,
-          cost_bps,
-        }),
-      })
-      if (!res.ok) throw new Error('Failed to add position')
-      // Refresh positions
-      const posRes = await fetch('/api/v1/positions/open?symbol=' + symbol).then(r => r.json())
-      setPositions(posRes)
-    } catch (err: any) {
-      alert('Failed to add position: ' + err.message)
     }
   }
 

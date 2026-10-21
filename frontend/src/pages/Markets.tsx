@@ -29,7 +29,7 @@ export default function Markets() {
     loadData()
   }, [])
 
-  const sectors = [...new Set(assets.map(a => a.sector).filter(Boolean))]
+  const sectors = [...new Set(assets.map(a => a.sector).filter((s): s is string => Boolean(s)))]
 
   const filtered = assets.filter(a => {
     const matchesSearch = !filter || 

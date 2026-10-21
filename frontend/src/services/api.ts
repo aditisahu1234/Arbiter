@@ -108,3 +108,23 @@ export async function runFF3(params: {
   if (!res.ok) throw new Error('FF3 failed')
   return res.json()
 }
+
+export async function fetchDataStatus(symbol: string): Promise<any> {
+  const res = await fetch(`${API_BASE}/positions/${symbol}/data-status`)
+  if (!res.ok) throw new Error(`Failed to fetch data status for ${symbol}`)
+  return res.json()
+}
+
+export async function refreshAssetData(symbol: string): Promise<any> {
+  const res = await fetch(`${API_BASE}/positions/${symbol}/refresh-data`, {
+    method: 'POST',
+  })
+  if (!res.ok) throw new Error(`Failed to refresh data for ${symbol}`)
+  return res.json()
+}
+
+export async function fetchLiveQuote(symbol: string): Promise<any> {
+  const res = await fetch(`${API_BASE}/positions/${symbol}/live-quote`)
+  if (!res.ok) return { data_state: 'unavailable', price: null, note: 'Live quote unavailable' }
+  return res.json()
+}
